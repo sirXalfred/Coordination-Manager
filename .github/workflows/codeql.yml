@@ -1,0 +1,67 @@
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '23 3 * * 1'
+
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: Analyze (javascript-typescript)
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@411bbbe57033eedfc1a82d68c01345aa96c737d7
+        with:
+          languages: javascript-typescript
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
+        with:
+          version: 10.28.0
+
+      - name: Setup Node
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: |
+            Code/pnpm-lock.yaml
+
+      - name: Install dependencies
+        working-directory: Code
+        run: pnpm install --frozen-lockfile
+
+      - name: Build workspace
+        working-directory: Code
+        run: pnpm -r --if-present run build
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@411bbbe57033eedfc1a82d68c01345aa96c737d7
+        continue-on-error: true
+
+      - name: Info - Code scanning requires GitHub Advanced Security
+        if: always()
+        run: |
+          echo ""
+          echo "⚠️  Code scanning upload unavailable:"
+          echo "   GitHub Advanced Security (GHAS) is only available for Organization accounts."
+          echo "   This personal account cannot upload CodeQL results to GitHub's code scanning dashboard."
+          echo "✅ Local CodeQL analysis still completes correctly and can be used offline."

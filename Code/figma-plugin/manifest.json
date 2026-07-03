@@ -1,0 +1,13 @@
+{
+  "name": "Coordination Manager Wireframes",
+  "id": "coordination-manager-wireframes",
+  "api": "1.0.0",
+  "main": "code.js",
+  "ui": "ui.html",
+  "editorType": ["figma"],
+  "documentAccess": "dynamic-page",
+  "networkAccess": {
+    "allowedDomains": ["none"],
+    "reasoning": "Plugin processes pasted JSON specs locally, no network needed"
+  }
+}

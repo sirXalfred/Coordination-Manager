@@ -1,0 +1,81 @@
+{
+  "name": "coordination-manager",
+  "version": "1.0.0",
+  "private": true,
+  "packageManager": "pnpm@10.28.0",
+  "description": "Coordination Manager — collaborative availability scheduling tool",
+  "scripts": {
+    "dev": "concurrently \"pnpm dev:web\" \"pnpm dev:api\" \"pnpm dev:bot\" \"pnpm dev:guardian\" \"pnpm dev:docs\"",
+    "dev:guardian": "pnpm --filter @coordination-manager/discord-guardian dev",
+    "dev:web": "pnpm --filter @coordination-manager/web dev",
+    "dev:api": "pnpm --filter @coordination-manager/api dev",
+    "dev:bot": "pnpm --filter @coordination-manager/discord-bot dev",
+    "dev:docs": "pnpm --filter @coordination-manager/docs dev",
+    "stop": "node scripts/stop-servers.js",
+    "stop:web": "node scripts/stop-servers.js web",
+    "stop:api": "node scripts/stop-servers.js api",
+    "stop:guardian": "node scripts/stop-servers.js guardian",
+    "stop:bot": "node scripts/stop-servers.js bot",
+    "stop:docs": "node scripts/stop-servers.js docs",
+    "restart": "node scripts/stop-servers.js && node -e \"setTimeout(()=>{},2000)\" && pnpm dev",
+    "restart:web": "node scripts/stop-servers.js web && pnpm dev:web",
+    "restart:api": "node scripts/stop-servers.js api && pnpm dev:api",
+    "restart:bot": "node scripts/stop-servers.js bot && pnpm dev:bot",
+    "restart:guardian": "node scripts/stop-servers.js guardian && pnpm dev:guardian",
+    "build:guardian": "pnpm --filter @coordination-manager/discord-guardian build",
+    "build": "pnpm -r build",
+    "build:web": "pnpm --filter @coordination-manager/web build",
+    "build:api": "pnpm --filter @coordination-manager/api build",
+    "build:docs": "pnpm --filter @coordination-manager/docs build",
+    "test": "pnpm -r test",
+    "test:web": "pnpm --filter @coordination-manager/web test",
+    "test:api": "pnpm --filter @coordination-manager/api test",
+    "test:coverage": "pnpm -r test:coverage",
+    "lint": "pnpm -r lint",
+    "lint:fix": "pnpm -r lint:fix",
+    "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,md}\"",
+    "typecheck": "pnpm -r typecheck",
+    "clean": "pnpm -r clean && rm -rf node_modules"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1",
+    "prettier": "^3.1.1",
+    "typescript": "^5.3.3"
+  },
+  "engines": {
+    "node": ">=20.0.0",
+    "pnpm": ">=8.0.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ],
+    "blockExoticSubdeps": true,
+    "overrides": {
+      "shell-quote": ">=1.8.4",
+      "follow-redirects": ">=1.16.0",
+      "undici": ">=8.5.0",
+      "@discordjs/rest>undici": ">=6.27.0",
+      "lodash": ">=4.18.1",
+      "flatted": ">=3.4.2",
+      "picomatch": ">=4.0.4",
+      "rollup": ">=4.59.0",
+      "qs@>=6.7.0 <=6.14.1": ">=6.14.2",
+      "qs@>=6.11.1 <=6.15.1": ">=6.15.2",
+      "path-to-regexp@<0.1.13": "0.1.13",
+      "brace-expansion@<2.0.2": "2.0.3",
+      "brace-expansion@^2.0.0": "2.0.3",
+      "brace-expansion@^5.0.0": "5.0.6",
+      "caniuse-lite": "1.0.30001793",
+      "baseline-browser-mapping": "2.10.33",
+      "esbuild@<=0.24.2": ">=0.25.0",
+      "vite@<=6.4.2": "6.4.3",
+      "ip-address@<=10.1.0": ">=10.1.1",
+      "ws@>=8.0.0 <8.21.0": ">=8.21.0",
+      "ws@>=7.0.0 <7.5.11": ">=7.5.11",
+      "@cardano-ogmios/client>ws": ">=8.21.0",
+      "form-data@>=4.0.0 <4.0.6": ">=4.0.6",
+      "js-yaml@<=4.1.1": ">=4.2.0"
+    }
+  }
+}

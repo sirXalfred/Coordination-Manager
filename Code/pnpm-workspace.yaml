@@ -1,0 +1,6 @@
+packages:
+  - apps/*
+  - packages/database
+  - figma-plugin
+
+onlyBuiltDependencies: '[''esbuild'', ''chacha-native'']'

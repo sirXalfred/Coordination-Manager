@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <script>
+      (function () {
+        try {
+          var p = JSON.parse(localStorage.getItem('theme-preferences') || '{}')
+          var m = p.mode || 'dark'
+          if (m === 'dark' || (m === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+            document.documentElement.classList.add('dark')
+          }
+        } catch (e) {}
+      })()
+    </script>
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>Coordination Manager</title>
+
+    <!-- Open Graph / Discord Embed -->
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://coordinationmanager.com" />
+    <meta property="og:title" content="Coordination Manager" />
+    <meta property="og:description" content="Coordinate community announcements, meetings, and governance across Discord servers - all from one dashboard." />
+    <meta property="og:image" content="https://coordinationmanager.com/og-image.png" />
+    <meta property="og:site_name" content="Coordination Manager" />
+    <meta name="theme-color" content="#7c3aed" />
+
+    <!-- Twitter / X -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Coordination Manager" />
+    <meta name="twitter:description" content="Coordinate community announcements, meetings, and governance across Discord servers - all from one dashboard." />
+    <meta name="twitter:image" content="https://coordinationmanager.com/og-image.png" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

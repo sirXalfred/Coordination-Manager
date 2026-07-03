@@ -1,0 +1,55 @@
+Coordination Manager
+Copyright (C) 2026 Voltaire Swarm OÜ
+
+This product includes software developed by Voltaire Swarm OÜ and
+contributors to the Coordination Manager project.
+
+------------------------------------------------------------------------
+License
+------------------------------------------------------------------------
+
+The Coordination Manager source code is licensed under the MIT License.
+The full text of the license is in the LICENSE file at the root of
+this repository.
+
+Documentation in this repository (files under docs/, README.md, and
+similar narrative documentation) is licensed under the Creative Commons
+Attribution 4.0 International license (CC BY 4.0).
+See <https://creativecommons.org/licenses/by/4.0/>.
+
+------------------------------------------------------------------------
+Trademarks and Brand Assets
+------------------------------------------------------------------------
+
+"Coordination Manager" and "Voltaire Swarm" are trademarks of Voltaire
+Swarm OÜ (Estonia). The MIT license covers the source code only;
+it does not grant rights to use these names, logos, or other branding
+elements.
+
+If you fork or run a modified instance of this software, you must
+choose a different name for your service and must not present your
+fork as the official Coordination Manager product or in any way
+suggest endorsement by Voltaire Swarm OÜ.
+
+For the full trademark policy, including permitted uses and how to
+request additional permissions, see TRADEMARKS.md.
+
+------------------------------------------------------------------------
+Contributions
+------------------------------------------------------------------------
+
+Contributions to this project are accepted under the Contributor
+License Agreement (CLA) described in CLA.md. By submitting a
+contribution, you agree to the terms of that agreement.
+
+------------------------------------------------------------------------
+Third-Party Components
+------------------------------------------------------------------------
+
+This project depends on third-party open source libraries listed in
+the package manifests (package.json files) of each workspace. Each
+such library is distributed under its own license. Run
+
+    pnpm licenses list
+
+from the Code/ workspace root to produce a current inventory.

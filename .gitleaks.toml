@@ -1,0 +1,91 @@
+# Gitleaks configuration for Coordination Manager
+# Allowlist rules for confirmed false positives identified on 2026-06-13 (23 raw findings,
+# 21 false positives, 1 real credential -- now rotated and untracked).
+# After adding new allowlist entries, regenerate the baseline:
+#   gitleaks detect --source . --redact --report-path .gitleaks-baseline.json
+# Then commit .gitleaks-baseline.json alongside this file.
+
+title = "Coordination Manager gitleaks config"
+
+[extend]
+# Extend the default ruleset
+useDefault = true
+
+# ---------------------------------------------------------------------------
+# Rule-level allowlists
+# ---------------------------------------------------------------------------
+
+[[rules]]
+# Suppress false positive on the JWT-shaped placeholder value used to keep
+# the supabase-js constructor happy when env vars are not configured.
+# Present in: Code/apps/api/src/supabaseClient.ts
+#             Code/apps/web/src/lib/supabase.ts
+id = "jwt"
+description = "JWT rule -- ignore placeholder-not-configured sentinel values"
+[rules.allowlist]
+regexes = [
+  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9\.eyJyb2xlIjoiYW5vbiJ9\.placeholder-not-configured',
+]
+
+[[rules]]
+# Suppress false positives on mock Cardano wallet test fixtures.
+# MOCK_KEY and MOCK_SIGNATURE are fabricated hex strings with no entropy.
+# Present in: Code/apps/api/src/routes/__tests__/wallet-auth.test.ts
+id = "generic-api-key"
+description = "generic-api-key -- ignore Cardano wallet mock fixtures and doc placeholders"
+[rules.allowlist]
+regexes = [
+  # Mock Cardano CBOR signature (hex prefix, fixed)
+  '845846a201276761646472657373583900a401010327200621582',
+  # Mock Cardano key (hex prefix, fixed)
+  'a4010103272006215820ba76745b3f12ef3b4a03a50a8ab4e7b4d8f7e5c2a1',
+]
+paths = [
+  # Allow generic-api-key findings in any test file
+  '''Code/apps/api/src/routes/__tests__/.*\.test\.ts''',
+  # Allow in docs (history-only placeholder files no longer in working tree)
+  '''docs/AI-Context/Environment-Variables-Guide\.md''',
+  '''docs/RemoTalk-Integration-Requirements\.md''',
+]
+
+[[rules]]
+# Suppress false positives from doc/README curl examples that use placeholder tokens.
+# Patterns: "Bearer YOUR_JWT_TOKEN", "Bearer cm_agent_YOUR_KEY_HERE",
+#           "Bearer <token>", "Bearer eyJ..." in code samples.
+id = "curl-auth-header"
+description = "curl-auth-header -- ignore documentation curl examples with placeholder tokens"
+[rules.allowlist]
+regexes = [
+  # Explicit placeholder text in curl -H samples
+  'Bearer YOUR_JWT_TOKEN',
+  'Bearer cm_agent_YOUR_KEY_HERE',
+  'Bearer your_refresh_token',
+  'Bearer <token>',
+  # Redacted/placeholder patterns common in OAuth setup docs
+  '''Bearer [A-Za-z0-9_\-]{0,32}$''',
+]
+paths = [
+  '''Code/figma-plugin/README\.md''',
+  '''Code/apps/docs/src/pages/GettingStartedPage\.tsx''',
+  '''docs/AI-Context/Google-OAuth-Localhost-Setup\.md''',
+]
+
+# ---------------------------------------------------------------------------
+# Global allowlist
+# ---------------------------------------------------------------------------
+
+[allowlist]
+description = "Global: ignore generated reports and known-clean config files"
+paths = [
+  # Our own redacted scan reports -- never contain raw secrets
+  '''docs/private/SECURITY_HARDENING_REPORT.*\.md''',
+  # .env.example files (template values only)
+  '''\.env\.example$''',
+]
+commits = [
+  # .vscode/mcp.json was committed in these two commits with Vercel + ImprovMX tokens.
+  # Tokens were rotated on 2026-06-13. File is now untracked/gitignored (commit c5cdb12).
+  # These commits are suppressed; the rotated credentials have no value.
+  "c8f5d285211e65eea23821a1831680b13312d877",
+  "66a180d952a1a9a9bbd9698fd7e1e966841529b1",
+]

@@ -1,0 +1,27 @@
+{
+  "name": "@coordination-manager/discord-bot",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.39.3",
+    "discord.js": "^14.16.3",
+    "dotenv": "^16.3.1",
+    "express": "^4.22.0"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.11.5",
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.3",
+    "vitest": "^4.1.0"
+  }
+}

@@ -1,0 +1,31 @@
+import React from 'react'
+import ReactDOM from 'react-dom/client'
+import { BrowserRouter } from 'react-router-dom'
+import { AuthProvider } from './contexts/AuthContext'
+import { ThemeProvider } from './contexts/ThemeContext'
+import { LearnerModeProvider } from './contexts/LearnerModeContext'
+import { SetupProvider } from './contexts/SetupContext'
+import { ToastProvider } from './components/Toast'
+import ErrorBoundary from './components/ErrorBoundary'
+import App from './App'
+import './index.css'
+
+ReactDOM.createRoot(document.getElementById('root')!).render(
+  <React.StrictMode>
+    <ErrorBoundary>
+    <BrowserRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
+      <SetupProvider>
+        <AuthProvider>
+          <ThemeProvider>
+            <LearnerModeProvider>
+              <ToastProvider>
+                <App />
+              </ToastProvider>
+            </LearnerModeProvider>
+          </ThemeProvider>
+        </AuthProvider>
+      </SetupProvider>
+    </BrowserRouter>
+    </ErrorBoundary>
+  </React.StrictMode>
+)
