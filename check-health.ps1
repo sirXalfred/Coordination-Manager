@@ -6,10 +6,113 @@ param(
     [int]$StartupDelaySeconds = 8,
     [int]$MaxWaitSeconds = 45,
     [int]$PollIntervalSeconds = 3,
+    [int]$LogTailLines = 120,
     [string]$StateFile = (Join-Path $(if ($PSScriptRoot) { $PSScriptRoot } elseif ($MyInvocation.MyCommand.Path) { Split-Path -Parent $MyInvocation.MyCommand.Path } else { (Get-Location).Path }) ".cm-dev-state.json")
 )
 
 $ErrorActionPreference = "Stop"
+$rootDir = if ($PSScriptRoot) { $PSScriptRoot } elseif ($MyInvocation.MyCommand.Path) { Split-Path -Parent $MyInvocation.MyCommand.Path } else { (Get-Location).Path }
+$defaultLogDir = Join-Path $rootDir ".cm-dev-logs"
+
+$consoleErrorPatterns = @(
+    '(?i)\\bunhandled rejection\\b',
+    '(?i)\\buncaught exception\\b',
+    '(?i)\\bfatal\\b',
+    '(?i)\\berror\\b'
+)
+
+$consoleIgnorePatterns = @(
+    '(?i)\\b0\\s+errors?\\b',
+    '(?i)\\bno\\s+errors?\\b',
+    '(?i)\\bwithout\\s+errors?\\b'
+)
+
+function Get-ServiceLogMap {
+    param(
+        [string]$StateFilePath,
+        [string]$FallbackLogDir
+    )
+
+    $map = @{}
+
+    if (Test-Path $StateFilePath) {
+        try {
+            $state = Get-Content -Path $StateFilePath -Raw | ConvertFrom-Json
+            if ($state.services) {
+                foreach ($svc in $state.services) {
+                    if (-not $svc.name) { continue }
+
+                    if ($svc.logPath) {
+                        $map[$svc.name] = [string]$svc.logPath
+                        continue
+                    }
+
+                    $map[$svc.name] = Join-Path $FallbackLogDir ("{0}.log" -f $svc.name)
+                }
+            }
+        } catch {
+            # If state is unreadable, continue with fallback log paths.
+        }
+    }
+
+    foreach ($svcName in @('web', 'api', 'bot', 'guardian', 'docs')) {
+        if (-not $map.ContainsKey($svcName)) {
+            $map[$svcName] = Join-Path $FallbackLogDir ("{0}.log" -f $svcName)
+        }
+    }
+
+    return $map
+}
+
+function Test-ServiceConsoleLog {
+    param(
+        [string]$ServiceName,
+        [string]$LogPath,
+        [int]$TailLines,
+        [string[]]$Patterns,
+        [string[]]$IgnorePatterns
+    )
+
+    if (-not (Test-Path $LogPath)) {
+        return [pscustomobject]@{ ok = $true; detail = "No console log file yet" }
+    }
+
+    try {
+        $lines = @(Get-Content -Path $LogPath -Tail $TailLines -ErrorAction Stop)
+    } catch {
+        return [pscustomobject]@{ ok = $false; detail = "Cannot read console log: $($_.Exception.Message)" }
+    }
+
+    if ($lines.Count -eq 0) {
+        return [pscustomobject]@{ ok = $true; detail = "No console output yet" }
+    }
+
+    for ($idx = $lines.Count - 1; $idx -ge 0; $idx--) {
+        $line = $lines[$idx]
+        if ([string]::IsNullOrWhiteSpace($line)) { continue }
+
+        $match = Select-String -InputObject $line -Pattern $Patterns -AllMatches
+        if (-not $match) { continue }
+
+        $isIgnored = $false
+        foreach ($ignorePattern in $IgnorePatterns) {
+            if ($line -match $ignorePattern) {
+                $isIgnored = $true
+                break
+            }
+        }
+        if ($isIgnored) { continue }
+
+        $snippet = $line.Trim()
+        if ($snippet.Length -gt 180) {
+            $snippet = $snippet.Substring(0, 180) + '...'
+        }
+
+        return [pscustomobject]@{ ok = $false; detail = "Console contains error text: $snippet" }
+    }
+
+    return [pscustomobject]@{ ok = $true; detail = "No error keywords in recent console output" }
+}
 
 function Test-Http {
     param(
@@ -69,12 +172,13 @@ function Test-GuardianProcess {
 Start-Sleep -Seconds $StartupDelaySeconds
 
 $deadline = (Get-Date).AddSeconds($MaxWaitSeconds)
+$serviceLogMap = Get-ServiceLogMap -StateFilePath $StateFile -FallbackLogDir $defaultLogDir
 $serviceChecks = @(
-    [pscustomobject]@{ service = "Web"; endpoint = "http://localhost:5173"; tester = { Test-Http -Url "http://localhost:5173" } },
-    [pscustomobject]@{ service = "API"; endpoint = "http://localhost:3001/health"; tester = { Test-Http -Url "http://localhost:3001/health" } },
-    [pscustomobject]@{ service = "Bot"; endpoint = "localhost:3002"; tester = { Test-ListeningPort -Port 3002 } },
-    [pscustomobject]@{ service = "Guardian"; endpoint = "console-only"; tester = { Test-GuardianProcess } },
-    [pscustomobject]@{ service = "Docs"; endpoint = "http://localhost:5174"; tester = { Test-Http -Url "http://localhost:5174" } }
+    [pscustomobject]@{ id = "web"; service = "Web"; endpoint = "http://localhost:5173"; tester = { Test-Http -Url "http://localhost:5173" } },
+    [pscustomobject]@{ id = "api"; service = "API"; endpoint = "http://localhost:3001/health"; tester = { Test-Http -Url "http://localhost:3001/health" } },
+    [pscustomobject]@{ id = "bot"; service = "Bot"; endpoint = "localhost:3002"; tester = { Test-ListeningPort -Port 3002 } },
+    [pscustomobject]@{ id = "guardian"; service = "Guardian"; endpoint = "console-only"; tester = { Test-GuardianProcess } },
+    [pscustomobject]@{ id = "docs"; service = "Docs"; endpoint = "http://localhost:5174"; tester = { Test-Http -Url "http://localhost:5174" } }
 )
 
 $latestResults = @{}
@@ -87,9 +191,21 @@ while ((Get-Date) -lt $deadline) {
             continue
         }
 
-        $result = & $serviceCheck.tester
-        $latestResults[$serviceCheck.service] = $result
-        if (-not $result.ok) {
+        $transportResult = & $serviceCheck.tester
+        $logPath = $serviceLogMap[$serviceCheck.id]
+        $consoleResult = Test-ServiceConsoleLog -ServiceName $serviceCheck.service -LogPath $logPath -TailLines $LogTailLines -Patterns $consoleErrorPatterns -IgnorePatterns $consoleIgnorePatterns
+
+        $combined = [pscustomobject]@{
+            ok = ($transportResult.ok -and $consoleResult.ok)
+            detail = if ($consoleResult.ok) {
+                $transportResult.detail
+            } else {
+                "{0} | {1}" -f $transportResult.detail, $consoleResult.detail
+            }
+        }
+
+        $latestResults[$serviceCheck.service] = $combined
+        if (-not $combined.ok) {
             $allPassNow = $false
         }
     }

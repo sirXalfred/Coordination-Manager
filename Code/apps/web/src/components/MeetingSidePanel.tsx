@@ -18,6 +18,7 @@ import LearnerHelpIcon from './LearnerHelpIcon'
 interface MeetingSidePanelProps {
   isOpen: boolean
   cellId: string | null
+  widthClassName?: string
   duration: number
   recurrenceRule: RecurrenceRule
   meetingLink: string
@@ -46,6 +47,7 @@ interface MeetingSidePanelProps {
 export default function MeetingSidePanel({
   isOpen,
   cellId,
+  widthClassName = 'w-80 min-w-[20rem]',
   duration,
   recurrenceRule,
   meetingLink,
@@ -241,10 +243,10 @@ export default function MeetingSidePanel({
       className={`
         shrink-0 sticky top-0 h-screen overflow-hidden
         transition-all duration-300 ease-in-out
-        ${isOpen ? 'w-80' : 'w-0'}
+        ${isOpen ? widthClassName : 'w-0'}
       `}
     >
-      <div className="w-80 min-w-[20rem] h-full flex flex-col bg-card border-r-2 border-primary/40 shadow-xl">
+      <div className={`${widthClassName} h-full flex flex-col bg-card border-r-2 border-primary/40 shadow-xl`}>
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-border bg-muted/30">
         <h3 className="text-sm font-bold text-foreground flex items-center gap-2">

@@ -148,6 +148,11 @@ interface SyncImportsResponse {
   totalFound?: number
 }
 
+interface WeekWindowCacheEntry {
+  events: UserEventRecord[]
+  updatedAt: number
+}
+
 interface TimeItem {
   id: string
   sourceEventId: string
@@ -301,11 +306,14 @@ const MINUTES_IN_DAY = (END_HOUR - START_HOUR) * 60
 type TimeWidth = 15 | 30 | 60
 const DEFAULT_SLOT_MINUTES: TimeWidth = 30
 const STORAGE_KEY = 'time-management-v1'
+const TIME_MANAGEMENT_SYNC_CHANNEL = 'coord-time-management-sync'
+const TIME_MANAGEMENT_SYNC_STORAGE_KEY = 'coord-time-management-sync-ping'
 const DAY_MS = 24 * 60 * 60 * 1000
 const MAIN_SOURCE_ID = 'coord-main'
 const AUTO_SAVE_DELAY_MS = 15000
 const SAVE_SUCCESS_HOLD_MS = 2500
 const RECURRENCE_MAX_LOOKAHEAD_DAYS = 365 * 20
+const WEEK_WINDOW_CACHE_RADIUS = 1
 
 const TAGS_LEGEND_COLOR = '#6b7280'
 const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/
@@ -369,6 +377,10 @@ function isRecurrenceEndType(value: unknown): value is RecurrenceEndType {
   return value === 'never' || value === 'on' || value === 'after'
 }
 
+function resolveShowQuickTemplatesInMain(value: unknown): boolean {
+  return value === true
+}
+
 function normaliseRecurrenceRule(value: unknown): RecurrenceRule {
   if (!value || typeof value !== 'object') {
     return { type: 'none' }
@@ -418,6 +430,18 @@ function formatRecurrenceSummary(rule: RecurrenceRule | null | undefined): strin
 
 function getUtcDateKey(date: Date): string {
   return date.toISOString().slice(0, 10)
+}
+
+function getLocalDateKey(date: Date): string {
+  return format(date, 'yyyy-MM-dd')
+}
+
+function getWeekWindowKey(weekStart: Date, sourceIds: string[]): string {
+  return `${getLocalDateKey(weekStart)}::${[...sourceIds].sort().join('|')}`
+}
+
+function getNeighborWeekStarts(weekStart: Date): Date[] {
+  return Array.from({ length: WEEK_WINDOW_CACHE_RADIUS * 2 + 1 }, (_, index) => addWeeks(weekStart, index - WEEK_WINDOW_CACHE_RADIUS))
 }
 
 function getRecurrenceWeekdayIndex(date: Date): number {
@@ -807,6 +831,35 @@ function serialiseQuickTemplatesForCompare(value: unknown): string {
       template.createdAt,
     ])
   )
+}
+
+function serialiseSyncCalendarsForCompare(value: unknown): string {
+  const list = Array.isArray(value)
+    ? value
+        .map((entry) => normaliseStoredSyncCalendar(entry))
+        .filter((entry): entry is SyncCalendar => Boolean(entry))
+    : []
+
+  const normalized = list
+    .map((source) => {
+      if (source.sourceType === 'external') {
+        return {
+          id: source.id,
+          enabled: source.enabled,
+          sourceType: 'external' as const,
+          externalKind: source.externalKind,
+          displayName: source.name,
+          secondaryLabel: source.secondaryLabel,
+        }
+      }
+      return {
+        id: source.id,
+        enabled: source.enabled,
+      }
+    })
+    .sort((left, right) => left.id.localeCompare(right.id))
+
+  return JSON.stringify(normalized)
 }
 
 function getTimeBackgroundSegments(period: TimeBackgroundPeriod): Array<{ startMinute: number; endMinute: number }> {
@@ -1206,7 +1259,7 @@ function loadPersistedPreferences(): StoredPreferences | null {
       timeBackgrounds,
       collapsedBackgroundIds,
       quickTemplates,
-      showQuickTemplatesInMain: parsed.showQuickTemplatesInMain !== false,
+      showQuickTemplatesInMain: resolveShowQuickTemplatesInMain(parsed.showQuickTemplatesInMain),
       quickTemplatesMainExpanded: parsed.quickTemplatesMainExpanded !== false,
       isLeftPanelOpen: parsed.isLeftPanelOpen !== false,
       leftPanelWidthPx,
@@ -2773,6 +2826,15 @@ export default function TimeManagementPage() {
     return () => clearInterval(id)
   }, [])
   const [currentWeekStart, setCurrentWeekStart] = useState(() => startOfWeek(new Date(), { weekStartsOn: 1 }))
+  const [highlightedDay, setHighlightedDay] = useState<Date | null>(null)
+  const todayHighlightTimerRef = useRef<number | null>(null)
+  useEffect(() => {
+    return () => {
+      if (todayHighlightTimerRef.current !== null) {
+        window.clearTimeout(todayHighlightTimerRef.current)
+      }
+    }
+  }, [])
   const [slotMinutes, setSlotMinutes] = useState<TimeWidth>(() => persistedPreferences?.slotMinutes ?? DEFAULT_SLOT_MINUTES)
   const [isLeftPanelOpen, setIsLeftPanelOpen] = useState(() => persistedPreferences?.isLeftPanelOpen ?? true)
   const [leftPanelWidthPx, setLeftPanelWidthPx] = useState(() => persistedPreferences?.leftPanelWidthPx ?? DEFAULT_LEFT_PANEL_WIDTH_PX)
@@ -2811,6 +2873,21 @@ export default function TimeManagementPage() {
   const [isModeJsonImportOpen, setIsModeJsonImportOpen] = useState(false)
   const [modeJsonImportDraft, setModeJsonImportDraft] = useState('')
   const [isImportingModeJson, setIsImportingModeJson] = useState(false)
+
+  const handleToday = () => {
+    const today = new Date()
+    setCurrentWeekStart(() => startOfWeek(today, { weekStartsOn: 1 }))
+    setHighlightedDay(today)
+
+    if (todayHighlightTimerRef.current !== null) {
+      window.clearTimeout(todayHighlightTimerRef.current)
+    }
+
+    todayHighlightTimerRef.current = window.setTimeout(() => {
+      setHighlightedDay(null)
+      todayHighlightTimerRef.current = null
+    }, 2200)
+  }
   const [isModeJsonExportOpen, setIsModeJsonExportOpen] = useState(false)
   const [isRenamingMode, setIsRenamingMode] = useState(false)
   const [modeDeleteState, setModeDeleteState] = useState<{ open: boolean; action: 'move' | null; transferToModeId: string | null }>({
@@ -2856,17 +2933,26 @@ export default function TimeManagementPage() {
   const quickTemplatesTouchedRef = useRef(false)
   const showQuickTemplatesTouchedRef = useRef(false)
   const draftRef = useRef<ItemDraft | null>(null)
+  const syncChannelRef = useRef<BroadcastChannel | null>(null)
+  const hasBroadcastedInitialSyncRef = useRef(false)
+  const enabledExternalSourceIdsRef = useRef<string[]>([])
 
   useEffect(() => {
     activeModeIdRef.current = activeModeId
   }, [activeModeId])
+
+  useEffect(() => {
+    currentWeekStartRef.current = currentWeekStart
+  }, [currentWeekStart])
   const [deletingBackgroundId, setDeletingBackgroundId] = useState<string | null>(null)
   const [deletingTemplateId, setDeletingTemplateId] = useState<string | null>(null)
   const [pendingTemplateSourceId, setPendingTemplateSourceId] = useState<string | null>(null)
   const [pendingTemplateQuickName, setPendingTemplateQuickName] = useState('')
   const [isTemplateSelectionMode, setIsTemplateSelectionMode] = useState(false)
   const [quickTemplates, setQuickTemplates] = useState<QuickTemplate[]>(() => persistedPreferences?.quickTemplates ?? [])
-  const [showQuickTemplatesInMain, setShowQuickTemplatesInMain] = useState(() => persistedPreferences?.showQuickTemplatesInMain ?? true)
+  const [showQuickTemplatesInMain, setShowQuickTemplatesInMain] = useState(
+    () => persistedPreferences?.showQuickTemplatesInMain ?? false
+  )
   const [quickTemplatesMainExpanded, setQuickTemplatesMainExpanded] = useState(
     () => persistedPreferences?.quickTemplatesMainExpanded ?? true
   )
@@ -2903,6 +2989,61 @@ export default function TimeManagementPage() {
   const eventsRef = useRef<UserEventRecord[]>([])
   const dragClientYRef = useRef<number | null>(null)
   const dragPreviewRef = useRef<HTMLDivElement | null>(null)
+  const currentWeekStartRef = useRef(currentWeekStart)
+  const weekWindowCacheRef = useRef(new Map<string, WeekWindowCacheEntry>())
+  const weekWindowRequestsRef = useRef(new Map<string, Promise<UserEventRecord[]>>())
+
+  const notifyTimeManagementDataChanged = useCallback((reason: string) => {
+    if (typeof window === 'undefined') return
+    const payload = {
+      type: 'time-management-updated',
+      reason,
+      updatedAt: Date.now(),
+    }
+    syncChannelRef.current?.postMessage(payload)
+    try {
+      localStorage.setItem(TIME_MANAGEMENT_SYNC_STORAGE_KEY, JSON.stringify(payload))
+    } catch {
+      // Ignore storage quota and private browsing errors.
+    }
+  }, [])
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof BroadcastChannel === 'undefined') {
+      return
+    }
+
+    const channel = new BroadcastChannel(TIME_MANAGEMENT_SYNC_CHANNEL)
+    syncChannelRef.current = channel
+
+    return () => {
+      if (syncChannelRef.current === channel) {
+        syncChannelRef.current = null
+      }
+      channel.close()
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!isAuthenticated) {
+      hasBroadcastedInitialSyncRef.current = false
+      return
+    }
+
+    if (!hasBroadcastedInitialSyncRef.current) {
+      hasBroadcastedInitialSyncRef.current = true
+      return
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      notifyTimeManagementDataChanged('state-changed')
+    }, 180)
+
+    return () => {
+      window.clearTimeout(timeoutId)
+    }
+  }, [categories, events, isAuthenticated, modes, notifyTimeManagementDataChanged])
+
   useEffect(() => {
     const isEditableTarget = (target: EventTarget | null) => {
       const node = target instanceof Node ? target : null
@@ -3273,7 +3414,7 @@ export default function TimeManagementPage() {
         const nextQuickTemplates = quickTemplatesTouchedRef.current ? quickTemplates : modeQuickTemplates
         const nextShowQuickTemplatesInMain = showQuickTemplatesTouchedRef.current
           ? showQuickTemplatesInMain
-          : activeMode.show_quick_templates_in_main !== false
+          : resolveShowQuickTemplatesInMain(activeMode.show_quick_templates_in_main)
         setQuickTemplates(nextQuickTemplates)
         setShowQuickTemplatesInMain(nextShowQuickTemplatesInMain)
         allowClearTimeBackgroundsRef.current = false
@@ -3401,27 +3542,39 @@ export default function TimeManagementPage() {
     }
   }, [isAuthenticated])
 
-  const fetchEvents = useCallback(async () => {
+  const fetchEvents = useCallback(async (options?: { silent?: boolean; weekStart?: Date }) => {
     if (!isAuthenticated) {
       setEvents([])
       setEventsError(null)
       setIsEventsLoading(false)
-      return
+      return [] as UserEventRecord[]
     }
 
-    setIsEventsLoading(true)
+    if (!options?.silent) {
+      setIsEventsLoading(true)
+    }
     setEventsError(null)
 
     try {
       const res = await dedupedGet<{ events: UserEventRecord[] }>('/api/user-events')
       const fetchedEvents = Array.isArray(res.data?.events) ? res.data.events : []
       setEvents(fetchedEvents)
+      const cacheWeekStart = options?.weekStart ?? currentWeekStartRef.current
+      const cacheKey = getWeekWindowKey(cacheWeekStart, enabledExternalSourceIdsRef.current)
+      weekWindowCacheRef.current.set(cacheKey, {
+        events: fetchedEvents,
+        updatedAt: Date.now(),
+      })
+      return fetchedEvents
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Failed to load meetings.'
       setEventsError(message)
       setEvents([])
+      return [] as UserEventRecord[]
     } finally {
-      setIsEventsLoading(false)
+      if (!options?.silent) {
+        setIsEventsLoading(false)
+      }
     }
   }, [isAuthenticated])
 
@@ -3519,8 +3672,8 @@ export default function TimeManagementPage() {
 
     const nextQuickTemplatesJson = serialiseQuickTemplatesForCompare(quickTemplates)
     const currentQuickTemplatesJson = serialiseQuickTemplatesForCompare(activeMode.quick_templates)
-    const nextShowQuickTemplatesInMain = showQuickTemplatesInMain !== false
-    const currentShowQuickTemplatesInMain = activeMode.show_quick_templates_in_main !== false
+    const nextShowQuickTemplatesInMain = resolveShowQuickTemplatesInMain(showQuickTemplatesInMain)
+    const currentShowQuickTemplatesInMain = resolveShowQuickTemplatesInMain(activeMode.show_quick_templates_in_main)
 
     if (
       nextQuickTemplatesJson === currentQuickTemplatesJson &&
@@ -3554,6 +3707,57 @@ export default function TimeManagementPage() {
       window.clearTimeout(timeoutId)
     }
   }, [activeModeId, modes, quickTemplates, showQuickTemplatesInMain])
+
+  useEffect(() => {
+    if (!hasHydratedModeStateRef.current) return
+    if (!activeModeId) return
+    const activeMode = modes.find((mode) => mode.id === activeModeId)
+    if (!activeMode) return
+
+    const nextSyncCalendarsJson = serialiseSyncCalendarsForCompare(syncCalendars)
+    const currentSyncCalendarsJson = serialiseSyncCalendarsForCompare(activeMode.sync_calendars)
+
+    if (nextSyncCalendarsJson === currentSyncCalendarsJson) {
+      return
+    }
+
+    const modeSyncCalendarsPayload = syncCalendars.map((source) => {
+      if (source.sourceType === 'external') {
+        return {
+          id: source.id,
+          enabled: source.enabled,
+          sourceType: 'external' as const,
+          externalKind: source.externalKind,
+          displayName: source.name,
+          secondaryLabel: source.secondaryLabel,
+        }
+      }
+
+      return {
+        id: source.id,
+        enabled: source.enabled,
+      }
+    })
+
+    const timeoutId = window.setTimeout(() => {
+      void (async () => {
+        try {
+          const res = await apiClient.put<{ mode?: TimeManagementMode }>(`/api/time-management/modes/${activeModeId}`, {
+            sync_calendars: modeSyncCalendarsPayload,
+          })
+          const updatedMode = res.data?.mode
+          if (!updatedMode) return
+          setModes((prev) => prev.map((mode) => (mode.id === activeModeId ? updatedMode : mode)))
+        } catch (err) {
+          console.error('Failed to update mode calendar sources:', err)
+        }
+      })()
+    }, 400)
+
+    return () => {
+      window.clearTimeout(timeoutId)
+    }
+  }, [activeModeId, modes, syncCalendars])
 
   useEffect(() => {
     const onMouseUp = () => {
@@ -3593,40 +3797,89 @@ export default function TimeManagementPage() {
     [syncCalendars]
   )
 
-  const syncConnectedCalendars = useCallback(async () => {
+  useEffect(() => {
+    enabledExternalSourceIdsRef.current = enabledExternalSources.map((source) => source.id)
+  }, [enabledExternalSources])
+
+  const hydrateWeekWindow = useCallback(async (weekStart: Date, options?: { background?: boolean; forceRefresh?: boolean }) => {
     if (isAuthLoading || !isAuthenticated || isTraveler || enabledExternalSources.length === 0) {
-      return
+      return [] as UserEventRecord[]
     }
 
-    const timeMin = currentWeekStart.toISOString()
-    const timeMax = addDays(currentWeekStart, 7).toISOString()
+    const weekKey = getWeekWindowKey(weekStart, enabledExternalSources.map((source) => source.id))
+    const cachedEntry = weekWindowCacheRef.current.get(weekKey)
+    if (cachedEntry && !options?.forceRefresh) {
+      if (weekStart.getTime() === currentWeekStartRef.current.getTime() && !options?.background) {
+        setEvents(cachedEntry.events)
+        setEventsError(null)
+        setIsEventsLoading(false)
+      }
+      return cachedEntry.events
+    }
 
-    setIsExternalSyncing(true)
-    setExternalSyncStatus(null)
+    const existingRequest = weekWindowRequestsRef.current.get(weekKey)
+    if (existingRequest) {
+      return existingRequest
+    }
+
+    const request = (async () => {
+      const isVisibleWeek = weekStart.getTime() === currentWeekStartRef.current.getTime()
+      const shouldShowLoading = isVisibleWeek && !options?.background
+      const timeMin = weekStart.toISOString()
+      const timeMax = addDays(weekStart, 7).toISOString()
+
+      if (shouldShowLoading) {
+        setIsExternalSyncing(true)
+        setExternalSyncStatus(null)
+      }
+
+      try {
+        const res = await apiClient.post<SyncImportsResponse>('/api/user-events/sync-imports', {
+          time_min: timeMin,
+          time_max: timeMax,
+          source_configs: enabledExternalSources.map((source) => ({
+            source_type: source.externalKind,
+            source_id: source.id,
+          })),
+        })
+
+        const summary = res.data || {}
+        const inserted = Number(summary.inserted || 0)
+        const updated = Number(summary.updated || 0)
+        const deleted = Number(summary.deleted || 0)
+        const fetchedEvents = await fetchEvents({ silent: !shouldShowLoading, weekStart })
+
+        weekWindowCacheRef.current.set(weekKey, {
+          events: fetchedEvents,
+          updatedAt: Date.now(),
+        })
+
+        if (shouldShowLoading) {
+          setExternalSyncStatus(`Synced current week: +${inserted} / ~${updated} / -${deleted}`)
+        }
+
+        return fetchedEvents
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : 'Failed to sync connected calendars.'
+        if (shouldShowLoading) {
+          setExternalSyncStatus(message)
+        }
+        return [] as UserEventRecord[]
+      } finally {
+        if (shouldShowLoading) {
+          setIsExternalSyncing(false)
+        }
+      }
+    })()
+
+    weekWindowRequestsRef.current.set(weekKey, request)
 
     try {
-      const res = await apiClient.post<SyncImportsResponse>('/api/user-events/sync-imports', {
-        time_min: timeMin,
-        time_max: timeMax,
-        source_configs: enabledExternalSources.map((source) => ({
-          source_type: source.externalKind,
-          source_id: source.id,
-        })),
-      })
-
-      const summary = res.data || {}
-      const inserted = Number(summary.inserted || 0)
-      const updated = Number(summary.updated || 0)
-      const deleted = Number(summary.deleted || 0)
-      await fetchEvents()
-      setExternalSyncStatus(`Synced current week: +${inserted} / ~${updated} / -${deleted}`)
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : 'Failed to sync connected calendars.'
-      setExternalSyncStatus(message)
+      return await request
     } finally {
-      setIsExternalSyncing(false)
+      weekWindowRequestsRef.current.delete(weekKey)
     }
-  }, [currentWeekStart, enabledExternalSources, fetchEvents, isAuthLoading, isAuthenticated, isTraveler])
+  }, [enabledExternalSources, fetchEvents, isAuthLoading, isAuthenticated, isTraveler])
 
   useEffect(() => {
     if (enabledExternalSources.length === 0) {
@@ -3634,8 +3887,24 @@ export default function TimeManagementPage() {
       return
     }
 
-    void syncConnectedCalendars()
-  }, [enabledExternalSources.length, syncConnectedCalendars])
+    const weekStarts = getNeighborWeekStarts(currentWeekStart)
+    const [previousWeekStart, visibleWeekStart, nextWeekStart] = weekStarts
+
+    void hydrateWeekWindow(visibleWeekStart, { background: false })
+
+    const warmNeighbors = window.setTimeout(() => {
+      if (previousWeekStart) {
+        void hydrateWeekWindow(previousWeekStart, { background: true })
+      }
+      if (nextWeekStart) {
+        void hydrateWeekWindow(nextWeekStart, { background: true })
+      }
+    }, 0)
+
+    return () => {
+      window.clearTimeout(warmNeighbors)
+    }
+  }, [currentWeekStart, enabledExternalSources.length, hydrateWeekWindow])
 
   const items = useMemo(() => {
     const hasEnabledSources = activeSourceIds.size > 0
@@ -3900,7 +4169,7 @@ export default function TimeManagementPage() {
             .filter((template): template is QuickTemplate => Boolean(template))
         : []
       setQuickTemplates(modeQuickTemplates)
-      setShowQuickTemplatesInMain(nextMode.show_quick_templates_in_main !== false)
+      setShowQuickTemplatesInMain(resolveShowQuickTemplatesInMain(nextMode.show_quick_templates_in_main))
 
       const modeSyncCalendars = Array.isArray(nextMode.sync_calendars)
         ? nextMode.sync_calendars
@@ -4143,7 +4412,9 @@ export default function TimeManagementPage() {
         : Array.isArray(payload.quickTemplates)
           ? payload.quickTemplates
           : [],
-      showQuickTemplatesInMain: (payload.show_quick_templates_in_main ?? payload.showQuickTemplatesInMain) !== false,
+      showQuickTemplatesInMain: resolveShowQuickTemplatesInMain(
+        payload.show_quick_templates_in_main ?? payload.showQuickTemplatesInMain
+      ),
       categoryColorDisplayStyle: normaliseCategoryColorDisplayStyle(
         payload.category_color_display_style ?? payload.categoryColorDisplayStyle
       ),
@@ -4292,7 +4563,7 @@ export default function TimeManagementPage() {
               .filter((template): template is QuickTemplate => Boolean(template))
           : []
         setQuickTemplates(modeQuickTemplates)
-        setShowQuickTemplatesInMain(nextMode.show_quick_templates_in_main !== false)
+        setShowQuickTemplatesInMain(resolveShowQuickTemplatesInMain(nextMode.show_quick_templates_in_main))
 
         const modeSyncCalendars = Array.isArray(nextMode.sync_calendars)
           ? nextMode.sync_calendars
@@ -5249,10 +5520,8 @@ export default function TimeManagementPage() {
         next.add('editor')
         return next
       })
-      setAutoFocusTitleOnEditorOpen(true)
-      setIsFullEditorOpen(true)
       showDescriptionHint()
-      showClipboardStatus(`Template "${template.quickName}" applied. Edit title and description.`)
+      showClipboardStatus(`Template "${template.quickName}" applied. Edit it here or open Full View.`)
     } catch (err) {
       console.error('Failed to apply template:', err)
       showClipboardStatus('Could not apply template. Try again.')
@@ -7176,6 +7445,9 @@ export default function TimeManagementPage() {
 
   const hasVisibleItems = visibleItems.length > 0
   const isLoading = isSourcesLoading || isEventsLoading
+  const handleRefreshCurrentWeek = useCallback(() => {
+    void hydrateWeekWindow(currentWeekStartRef.current, { background: false, forceRefresh: true })
+  }, [hydrateWeekWindow])
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-background px-2 pb-6 pt-3 md:px-4 md:pt-4">
@@ -7642,7 +7914,7 @@ export default function TimeManagementPage() {
                           )}
                           <button
                             type="button"
-                            onClick={() => { void syncConnectedCalendars() }}
+                            onClick={handleRefreshCurrentWeek}
                             disabled={isExternalSyncing || enabledExternalSources.length === 0}
                             className="ml-auto inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[10px] font-medium text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
                             title={enabledExternalSources.length === 0 ? 'Enable at least one connected calendar to sync the current week.' : 'Sync the selected connected calendars for the current week'}
@@ -8515,7 +8787,7 @@ export default function TimeManagementPage() {
                           )}
 
                           {selectedItem && !isSelectedReadOnly && (
-                            <div className="grid grid-cols-3 gap-2">
+                            <div className="grid grid-cols-4 gap-2">
                               <button
                                 type="button"
                                 onClick={handleUpdateItem}
@@ -8524,6 +8796,15 @@ export default function TimeManagementPage() {
                               >
                                 <Save className="h-4 w-4" />
                                 Save
+                              </button>
+                              <button
+                                type="button"
+                                onClick={openFullEditor}
+                                className="flex h-10 w-full items-center justify-center gap-1 rounded-md border border-blue-400/70 bg-blue-600 px-3 py-2 text-sm font-medium text-white shadow-sm hover:bg-blue-500"
+                                title="Open full view for selected item"
+                              >
+                                <Maximize2 className="h-4 w-4" />
+                                Full View
                               </button>
                               <div className="relative w-full" data-delete-popover-root="true">
                                 <button
@@ -9023,7 +9304,7 @@ export default function TimeManagementPage() {
             <ChevronLeft className="h-4 w-4" />
           </button>
           <button
-            onClick={() => setCurrentWeekStart(() => startOfWeek(new Date(), { weekStartsOn: 1 }))}
+            onClick={handleToday}
             className="rounded-md border border-border px-2.5 py-1.5 text-xs font-semibold text-foreground hover:bg-muted"
           >
             Today
@@ -9102,15 +9383,20 @@ export default function TimeManagementPage() {
                 </div>
               )
             })}
-            {weekDays.map((day) => (
+            {weekDays.map((day) => {
+              const isHighlightedDay = highlightedDay ? isSameDay(day, highlightedDay) : false
+              return (
               <div
                 key={day.toISOString()}
-                className="border-r border-border px-2 py-2 text-center text-xs font-semibold text-foreground last:border-r-0"
+                className={`border-r border-border px-2 py-2 text-center text-xs font-semibold text-foreground last:border-r-0 transition-shadow ${
+                  isHighlightedDay ? 'animate-pulse bg-blue-50/80 ring-2 ring-inset ring-blue-500/70 dark:bg-blue-950/30' : ''
+                }`}
               >
                 <div>{format(day, 'EEE')}</div>
                 <div className="text-[11px] text-muted-foreground">{format(day, 'd MMM')}</div>
               </div>
-            ))}
+              )
+            })}
           </div>
 
           <div
@@ -9157,6 +9443,7 @@ export default function TimeManagementPage() {
               const layout = dayLayouts[dayIndex]
               const hasSelection =
                 selectionDraft?.dayIndex === dayIndex && selectionDraft.endMinute > selectionDraft.startMinute
+              const isHighlightedDay = highlightedDay ? isSameDay(day, highlightedDay) : false
               const isDropPreviewVisible =
                 isDraggingItem &&
                 dragDropPreview?.dayIndex === dayIndex &&
@@ -9172,7 +9459,9 @@ export default function TimeManagementPage() {
               return (
                 <div
                   key={day.toISOString()}
-                  className="relative border-r border-border last:border-r-0"
+                  className={`relative border-r border-border last:border-r-0 transition-shadow ${
+                    isHighlightedDay ? 'animate-pulse bg-blue-50/70 ring-2 ring-inset ring-blue-500/70 dark:bg-blue-950/25' : ''
+                  }`}
                   ref={(element) => {
                     if (repeatIndex === CALENDAR_REPEAT_MIDDLE_INDEX) {
                       dayColumnRefs.current[dayIndex] = element

@@ -272,6 +272,135 @@ describe('TimeManagement editor regressions', () => {
     expect(sessionStorage.getItem('authReturnTo')).toBeNull()
   })
 
+  it('applies a quick object without auto-opening full view and still allows opening it manually', async () => {
+    const weekStart = startOfWeek(new Date(), { weekStartsOn: 1 })
+    const createdStart = new Date(Date.UTC(weekStart.getFullYear(), weekStart.getMonth(), weekStart.getDate(), 7, 0, 0)).toISOString()
+    const createdEnd = new Date(Date.UTC(weekStart.getFullYear(), weekStart.getMonth(), weekStart.getDate(), 7, 30, 0)).toISOString()
+
+    mockDedupedGet.mockImplementation(async (url: string) => {
+      if (url === '/api/calendar-sources') return { data: { sources: [] } }
+      if (url === '/api/time-management/modes') {
+        return {
+          data: {
+            activeModeId: 'mode-main',
+            modes: [
+              {
+                id: 'mode-main',
+                name: 'Main',
+                main_color: '#2563eb',
+                slot_minutes: 30,
+                sync_calendars: [],
+                time_backgrounds: [],
+                collapsed_background_ids: [],
+                quick_templates: [
+                  {
+                    id: 'tpl-quick-1',
+                    quickName: 'Standup',
+                    title: 'Daily standup',
+                    notes: 'Team sync',
+                    categoryIds: [],
+                    sourceItemId: 'seed-item',
+                    createdAt: new Date().toISOString(),
+                  },
+                ],
+                show_quick_templates_in_main: true,
+              },
+            ],
+          },
+        }
+      }
+      if (url === '/api/time-management/categories') return { data: { categories: [] } }
+      if (url === '/api/user-events') return { data: { events: [] } }
+      return { data: {} }
+    })
+
+    vi.mocked(apiClient.post).mockResolvedValueOnce({
+      data: {
+        event: {
+          id: 'evt-from-template',
+          title: 'Daily standup',
+          description: 'Team sync',
+          meeting_link: null,
+          location: null,
+          start_time: createdStart,
+          end_time: createdEnd,
+          source_type: 'manual',
+          source_id: 'mode-main',
+          category_ids: [],
+        },
+      },
+    })
+    vi.mocked(apiClient.put).mockResolvedValue({
+      data: {
+        mode: {
+          id: 'mode-main',
+          name: 'Main',
+          main_color: '#2563eb',
+          slot_minutes: 30,
+          sync_calendars: [],
+          time_backgrounds: [],
+          collapsed_background_ids: [],
+          quick_templates: [
+            {
+              id: 'tpl-quick-1',
+              quickName: 'Standup',
+              title: 'Daily standup',
+              notes: 'Team sync',
+              categoryIds: [],
+              sourceItemId: 'seed-item',
+              createdAt: new Date().toISOString(),
+            },
+          ],
+          show_quick_templates_in_main: true,
+        },
+      },
+    })
+
+    const { container } = render(
+      <MemoryRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
+        <TimeManagementPage />
+      </MemoryRouter>
+    )
+
+    await screen.findByRole('heading', { name: 'Time Management' })
+
+    const firstDayColumn = container.querySelector("div[style*='repeating-linear-gradient']") as HTMLDivElement | null
+    expect(firstDayColumn).toBeTruthy()
+    if (!firstDayColumn) return
+
+    vi.spyOn(firstDayColumn, 'getBoundingClientRect').mockReturnValue({
+      x: 0,
+      y: 0,
+      left: 0,
+      top: 0,
+      right: 100,
+      bottom: 600,
+      width: 100,
+      height: 600,
+      toJSON: () => ({}),
+    })
+
+    fireEvent.mouseDown(firstDayColumn, { button: 0, clientX: 20, clientY: 140 })
+    fireEvent.click(await screen.findByRole('button', { name: 'Apply Template' }))
+
+    await waitFor(() => {
+      expect(apiClient.post).toHaveBeenCalledWith('/api/user-events', expect.anything())
+    })
+
+    await screen.findByDisplayValue('Daily standup')
+
+    expect(screen.queryByText('Use the full view to draft long notes, templates, and checklists.')).not.toBeInTheDocument()
+
+    const selectedFullViewButton = await screen.findByTitle('Open full view for selected item')
+    expect(selectedFullViewButton).toBeInTheDocument()
+
+    fireEvent.click(selectedFullViewButton)
+
+    await waitFor(() => {
+      expect(screen.getAllByDisplayValue('Daily standup')).toHaveLength(2)
+    })
+  })
+
   it('renders the sidepanel editor in compact auto-height mode', async () => {
     const { container } = render(
       <MemoryRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>

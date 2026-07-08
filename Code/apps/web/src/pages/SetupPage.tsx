@@ -54,6 +54,7 @@ interface MaskedEntry {
   set: boolean
   masked: string
   isSecret: boolean
+  isPlaceholder?: boolean
   /**
    * Effective runtime value the API/web actually use when this var is
    * unset (e.g. PORT defaults to 3001 in code). Populated only for the
@@ -359,7 +360,7 @@ function detectCurrentMode(component: ComponentSpec, values: ValuesSnapshot | nu
   // the dev server is actually running on hardcoded defaults.
   const anySet = component.fields.some(f => {
     const entry = values[f.target]?.[f.key]
-    return Boolean(entry?.set) || Boolean(entry?.runtime)
+    return Boolean(entry?.runtime) || Boolean(entry?.set && !entry?.isPlaceholder)
   })
   return anySet ? 'selfhost' : 'off'
 }
@@ -995,12 +996,23 @@ function ComponentCard({
 
   const displayValues: Record<string, string> = effective
 
+  const hasConfiguredField = useCallback((field: FieldSpec): boolean => {
+    if (view === 'local') {
+      const entry = values?.[field.target]?.[field.key]
+      return Boolean(entry?.runtime) || Boolean(entry?.set && !entry?.isPlaceholder)
+    }
+    if (view === 'production') {
+      return Boolean(overrides[field.target]?.[field.key]?.value)
+    }
+    return Boolean(displayValues[field.key])
+  }, [displayValues, overrides, values, view])
+
   // Auto-expand decision.
   //   * Template view never auto-expands.
   //   * Otherwise expand only when the card is required AND has no value.
   const hasAnyInfo =
     currentMode !== 'off'
-    || component.fields.some(f => Boolean(displayValues[f.key]))
+    || component.fields.some(f => hasConfiguredField(f))
   const shouldAutoExpand =
     view !== 'template'
     && Boolean(component.required)
@@ -1013,7 +1025,7 @@ function ComponentCard({
 
   // Required + empty -- elevate visually so the user spots gaps fast.
   const isFullyConfigured = component.fields.length > 0
-    && component.fields.every(f => Boolean(displayValues[f.key]))
+    && component.fields.every(f => hasConfiguredField(f))
   // Required components are "missing" whenever they are not fully configured.
   const isMissingRequired =
     component.required === true

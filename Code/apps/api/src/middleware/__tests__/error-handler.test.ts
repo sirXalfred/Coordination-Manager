@@ -77,6 +77,7 @@ describe('errorHandler', () => {
     }
     mockReq = { path: '/test', method: 'POST' }
     vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
   })
 
   it('handles ApplicationError with correct status and body', () => {
@@ -167,5 +168,22 @@ describe('errorHandler', () => {
       path: '/test',
       method: 'POST',
     }))
+  })
+
+  it('downgrades missing-token unauthorized logs to warning without stack', () => {
+    const err = new UnauthorizedError('Missing authentication token')
+    const errorSpy = vi.mocked(console.error)
+    const warnSpy = vi.mocked(console.warn)
+    errorSpy.mockClear()
+    warnSpy.mockClear()
+
+    errorHandler(err, mockReq as never, mockRes as never, vi.fn())
+
+    expect(warnSpy).toHaveBeenCalledWith('Auth warning:', expect.objectContaining({
+      message: 'Missing authentication token',
+      path: '/test',
+      method: 'POST',
+    }))
+    expect(errorSpy).not.toHaveBeenCalled()
   })
 })

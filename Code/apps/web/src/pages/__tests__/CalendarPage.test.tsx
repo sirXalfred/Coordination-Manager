@@ -37,6 +37,7 @@ vi.mock('../../contexts/AiAssistantContext', () => ({
 
 vi.mock('../../contexts/LayoutContext', () => ({
   LeftPanelPortal: ({ children }: { children: ReactNode }) => <>{children}</>,
+  RightPanelPortal: ({ children }: { children: ReactNode }) => <>{children}</>,
 }))
 
 vi.mock('../../components/Toast', () => ({
@@ -246,7 +247,7 @@ describe('CalendarPage Secret Swarm syncs', () => {
     await openCalendarSyncsPanel()
     expect(screen.getByText('Secret Swarm')).toBeInTheDocument()
 
-    const modeCheckbox = screen.getByRole('checkbox', { name: 'Focus mode' })
+    const modeCheckbox = screen.getByRole('checkbox', { name: /^Focus\b/i })
     expect(modeCheckbox).toBeChecked()
 
     const busyCell = document.querySelector('[data-cell-id="2026-06-10_10:00"]') as HTMLElement | null

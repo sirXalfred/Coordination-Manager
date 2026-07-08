@@ -23,6 +23,8 @@ Thumbs.db
 *.tmp
 .cache
 .cm-dev-state.json
+.cm-dev-logs/
+*.log
 
 # VS Code MCP config (contains API tokens)
 .vscode/mcp.json

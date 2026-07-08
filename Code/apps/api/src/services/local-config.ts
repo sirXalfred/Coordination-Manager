@@ -202,16 +202,72 @@ export const WRITABLE_GUARDIAN_ENV_KEYS = new Set<string>([
   'DISABLE_BOT',
 ])
 
+const PLACEHOLDER_EXACT_VALUES = new Set<string>([
+  'placeholder',
+  'placeholders',
+  'changeme',
+  'change-me',
+  'change_me',
+  'replace-me',
+  'replace_me',
+  'replace-this',
+  'replace_this',
+  'replace',
+  'todo',
+  'tbd',
+  'example',
+  'sample',
+  'dummy',
+  'test',
+  'null',
+  'undefined',
+  'none',
+  'n/a',
+  'na',
+  'xxx',
+  '***',
+])
+
+function looksLikePlaceholder(raw: string): boolean {
+  const value = raw.trim()
+  if (!value) return true
+  const normalized = value.toLowerCase()
+  if (PLACEHOLDER_EXACT_VALUES.has(normalized)) return true
+  if (/\bplaceholder\b/i.test(value)) return true
+  if (/\b(change|replace)\s?(me|this)\b/i.test(value)) return true
+  if (/^<(your|project|insert|add|value|secret|token|key|id|url)[^>]*>$/i.test(value)) return true
+  if (/^\{\{[^}]+\}\}$/.test(value)) return true
+  if (/^(your|my)[_-]?(key|token|secret|id|url|client|password)/i.test(normalized)) return true
+  if (/^(sk-|pk-)?x{6,}$/i.test(value)) return true
+  return false
+}
+
+export function isMeaningfulEnvValue(key: string, value: string | undefined | null): boolean {
+  if (!value) return false
+  const trimmed = value.trim()
+  if (!trimmed) return false
+  if (looksLikePlaceholder(trimmed)) return false
+
+  if (key === 'SUPABASE_URL') {
+    if (!/^https:\/\//i.test(trimmed)) return false
+    if (/project-ref|your-project|example/i.test(trimmed)) return false
+  }
+
+  return true
+}
+
 export function getRequiredEnvStatus(): {
   apiMissing: string[]
   webMissing: string[]
   isApiConfigured: boolean
 } {
   // For the API, check process.env (already loaded by dotenv in supabaseClient.ts).
-  const apiMissing = REQUIRED_API_KEYS.filter(k => !process.env[k]).slice()
+  const apiMissing = REQUIRED_API_KEYS.filter(k => !isMeaningfulEnvValue(k, process.env[k])).slice()
   // For the web, parse its .env file directly -- we can't read import.meta.env here.
   const webEnv = parseDotenvSync(WEB_ENV_FILE())
-  const webMissing = REQUIRED_WEB_KEYS.filter(k => !webEnv[k] && !process.env[k]).slice()
+  const webMissing = REQUIRED_WEB_KEYS.filter(k => {
+    return !isMeaningfulEnvValue(k, webEnv[k]) && !isMeaningfulEnvValue(k, process.env[k])
+  }).slice()
   return {
     apiMissing,
     webMissing,
@@ -242,9 +298,9 @@ export function getOptionalFeatureStatus(): Record<keyof typeof OPTIONAL_FEATURE
     if (feature === 'discord') {
       // Bot process loads its own .env; consider Discord configured if either
       // the API env (mirrored) OR the bot's own .env has the required keys.
-      out[feature] = keys.every(k => Boolean(process.env[k] || botEnv[k]))
+      out[feature] = keys.every(k => isMeaningfulEnvValue(k, process.env[k]) || isMeaningfulEnvValue(k, botEnv[k]))
     } else {
-      out[feature] = keys.every(k => Boolean(process.env[k]))
+      out[feature] = keys.every(k => isMeaningfulEnvValue(k, process.env[k]))
     }
   }
   return out
@@ -498,6 +554,8 @@ export interface MaskedEnvEntry {
   set: boolean
   masked: string
   isSecret: boolean
+  /** True when the value exists but appears to be placeholder/template text. */
+  isPlaceholder?: boolean
   /**
    * Effective runtime value the app is actually using when this env var is
    * unset. Only populated for non-secret deployment defaults so the Setup
@@ -538,10 +596,12 @@ export function getMaskedEnvSnapshot(): {
   const api: Record<string, MaskedEnvEntry> = {}
   for (const key of WRITABLE_API_ENV_KEYS) {
     const raw = process.env[key] ?? ''
+    const isPlaceholder = Boolean(raw) && !isMeaningfulEnvValue(key, raw)
     const entry: MaskedEnvEntry = {
       set: Boolean(raw),
       masked: raw ? maskValue(key, raw) : '',
       isSecret: !NON_SECRET_KEYS.has(key),
+      isPlaceholder,
     }
     if (!raw && API_RUNTIME_DEFAULTS[key]) entry.runtime = API_RUNTIME_DEFAULTS[key]
     api[key] = entry
@@ -550,10 +610,12 @@ export function getMaskedEnvSnapshot(): {
   const webEnv = parseDotenvSync(WEB_ENV_FILE())
   for (const key of WRITABLE_WEB_ENV_KEYS) {
     const raw = webEnv[key] ?? process.env[key] ?? ''
+    const isPlaceholder = Boolean(raw) && !isMeaningfulEnvValue(key, raw)
     const entry: MaskedEnvEntry = {
       set: Boolean(raw),
       masked: raw ? maskValue(key, raw) : '',
       isSecret: !NON_SECRET_KEYS.has(key),
+      isPlaceholder,
     }
     if (!raw && WEB_RUNTIME_DEFAULTS[key]) entry.runtime = WEB_RUNTIME_DEFAULTS[key]
     web[key] = entry
@@ -569,6 +631,7 @@ export function getMaskedEnvSnapshot(): {
       set: Boolean(raw),
       masked: raw ? maskValue(key, raw) : '',
       isSecret: !NON_SECRET_KEYS.has(key),
+      isPlaceholder: Boolean(raw) && !isMeaningfulEnvValue(key, raw),
     }
   }
   const guardian: Record<string, MaskedEnvEntry> = {}
@@ -579,6 +642,7 @@ export function getMaskedEnvSnapshot(): {
       set: Boolean(raw),
       masked: raw ? maskValue(key, raw) : '',
       isSecret: !NON_SECRET_KEYS.has(key),
+      isPlaceholder: Boolean(raw) && !isMeaningfulEnvValue(key, raw),
     }
   }
   return { api, web, bot, guardian }

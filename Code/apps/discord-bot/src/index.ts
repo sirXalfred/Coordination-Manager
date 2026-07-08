@@ -20,7 +20,11 @@ import {
 } from 'discord.js'
 import express from 'express'
 import { timingSafeEqual } from 'crypto'
-import { supabase } from './supabase.js'
+import {
+  supabase as maybeSupabase,
+  isSupabaseConfigured,
+  missingSupabaseEnvVars,
+} from './supabase.js'
 import { sendDM, handleSubscribe, handleUnsubscribe, handleOptOut, wrapUrlsForEmbed } from './dm-flow.js'
 import type { DmDeps, DmSendResult } from './dm-flow.js'
 
@@ -49,6 +53,14 @@ if (!DISCORD_TOKEN || !DISCORD_CLIENT_ID) {
   )
   process.exit(0)
 }
+if (!isSupabaseConfigured || !maybeSupabase) {
+  console.warn(
+    '[bot] Setup mode enabled -- missing Supabase config: ' + missingSupabaseEnvVars.join(', ') + '\n' +
+    '      Discord bot database features are disabled until setup is complete.\n' +
+    '      Add SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY, then restart.'
+  )
+  process.exit(0)
+}
 if (!API_BOT_SECRET) {
   // BOT_API_SECRET is required for the bot's internal HTTP listener to
   // authenticate platform-API callbacks. Without it we would expose an
@@ -63,6 +75,7 @@ if (!API_BOT_SECRET) {
 }
 
 const API_BOT_SECRET_BUF = Buffer.from(API_BOT_SECRET, 'utf8')
+const supabase = maybeSupabase
 
 // ─── Discord Client ───────────────────────────────────────────────────
 

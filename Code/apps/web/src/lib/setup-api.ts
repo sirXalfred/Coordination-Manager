@@ -23,6 +23,12 @@ export interface SetupStatus {
   isSupabaseConfigured: boolean
   missing: { api: string[]; web: string[] }
   required: { api: string[]; web: string[] }
+  probes?: {
+    database?: {
+      ok: boolean
+      detail: string
+    }
+  }
   /** Per-feature configured flags. False means the matching env keys are missing. */
   features?: Partial<Record<FeatureFlag, boolean>>
   /** Per-feature "disabled on this machine" flags. */
