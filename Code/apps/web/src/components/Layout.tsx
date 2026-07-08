@@ -17,7 +17,7 @@ import { ChatSidePanel } from './ChatSidePanel'
 import { SupportSidePanel } from './SupportSidePanel'
 import { FeatureDisabledBanner } from './FeatureDisabledBanner'
 import { AiAssistantProvider } from '../contexts/AiAssistantContext'
-import { LeftPanelSlot } from '../contexts/LayoutContext'
+import { LeftPanelSlot, RightPanelSlot } from '../contexts/LayoutContext'
 import FloatingPanels from './FloatingPanels'
 import type { PanelId } from './FloatingPanels'
 
@@ -1201,6 +1201,9 @@ export default function Layout() {
         {shouldRenderMainBottomSpacer && <div className="h-[30vh]" />}
       </main>
       </div>
+
+      {/* RIGHT PANEL SLOT -- Portal target for page-level right panels */}
+      <RightPanelSlot />
 
       {/* Push side panels — flex siblings that shrink main content */}
       <AiGuideSidePanel isOpen={aiPanelOpen} onClose={() => setActivePanel(null)} />

@@ -12,6 +12,7 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $code = Join-Path $root "Code"
 $stateFile = Join-Path $root ".cm-dev-state.json"
+$logDir = Join-Path $root ".cm-dev-logs"
 $serviceRunner = Join-Path $root "run-dev-service.ps1"
 $markerDir = Join-Path $root ".cm-stop-markers"
 $tag = "[CM]"
@@ -37,17 +38,23 @@ Start-Sleep -Seconds 2
 if (Test-Path $markerDir) {
 	Remove-Item $markerDir -Recurse -Force -ErrorAction SilentlyContinue
 }
+if (Test-Path $logDir) {
+	Remove-Item $logDir -Recurse -Force -ErrorAction SilentlyContinue
+}
+New-Item -ItemType Directory -Path $logDir -Force | Out-Null
 
 Write-Host "[3/3] Launching service windows..."
 $launched = @()
 
 foreach ($service in $services) {
+	$serviceLogPath = Join-Path $logDir ("{0}.log" -f $service.Name)
 	$runnerArgs = @(
 		"-ExecutionPolicy", "Bypass", "-File", $serviceRunner,
 		"-ServiceName", $service.Name,
 		"-Title", $service.Title,
 		"-CodeDir", $code,
-		"-ServiceCommand", $service.Command
+		"-ServiceCommand", $service.Command,
+		"-LogPath", $serviceLogPath
 	)
 
 	if ($hasWindowsTerminal) {
@@ -55,7 +62,8 @@ foreach ($service in $services) {
 		$safeRunnerArg = $serviceRunner.Replace('"', '""')
 		$safeCodeArg = $code.Replace('"', '""')
 		$safeCommandArg = $service.Command.Replace('"', '""')
-		$wtArgString = "-w $wtWindowName new-tab -p `"$wtProfileName`" --title `"$safeTitleArg`" --suppressApplicationTitle $shellExe -ExecutionPolicy Bypass -File `"$safeRunnerArg`" -ServiceName `"$($service.Name)`" -Title `"$safeTitleArg`" -CodeDir `"$safeCodeArg`" -ServiceCommand `"$safeCommandArg`""
+		$safeLogPathArg = $serviceLogPath.Replace('"', '""')
+		$wtArgString = "-w $wtWindowName new-tab -p `"$wtProfileName`" --title `"$safeTitleArg`" --suppressApplicationTitle $shellExe -ExecutionPolicy Bypass -File `"$safeRunnerArg`" -ServiceName `"$($service.Name)`" -Title `"$safeTitleArg`" -CodeDir `"$safeCodeArg`" -ServiceCommand `"$safeCommandArg`" -LogPath `"$safeLogPathArg`""
 		$proc = Start-Process wt -ArgumentList $wtArgString -WorkingDirectory $code -PassThru
 		$launchMode = "windows-terminal-tab"
 	} else {
@@ -67,6 +75,7 @@ foreach ($service in $services) {
 		name = $service.Name
 		title = $service.Title
 		command = $service.Command
+		logPath = $serviceLogPath
 		launcherPid = $proc.Id
 		launchMode = $launchMode
 		startedAt = (Get-Date).ToString("o")

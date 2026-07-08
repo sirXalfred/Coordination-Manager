@@ -2,6 +2,7 @@ import dotenv from 'dotenv'
 dotenv.config()
 
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import { isMeaningfulEnvValue } from './services/local-config.js'
 
 // ---------------------------------------------------------------------------
 // Lazy / tolerant Supabase clients
@@ -27,7 +28,8 @@ const supabaseKey = process.env.SUPABASE_KEY || PLACEHOLDER_KEY
 const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY
 
 export function isSupabaseConfigured(): boolean {
-  return Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_KEY)
+  return isMeaningfulEnvValue('SUPABASE_URL', process.env.SUPABASE_URL)
+    && isMeaningfulEnvValue('SUPABASE_KEY', process.env.SUPABASE_KEY)
 }
 
 if (!isSupabaseConfigured()) {

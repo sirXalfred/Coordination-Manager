@@ -639,12 +639,26 @@ export default function AnnouncementsPage() {
   const pendingMeetingPrefill = useRef<{ meetingIds?: string[]; calendarHash?: string; calendarOnly?: boolean } | null>(null)
 
   useEffect(() => {
-    const prefillTitle = searchParams.get('prefillTitle')
-    const prefillBody = searchParams.get('prefillBody')
-    const prefillReset = searchParams.get('prefillReset')
-    const prefillMeetingIds = searchParams.get('prefillMeetingIds')
-    const prefillCalendarHash = searchParams.get('prefillCalendarHash')
-    const prefillCalendarOnly = searchParams.get('prefillCalendarOnly') === '1'
+    let prefillTitle = searchParams.get('prefillTitle')
+    let prefillBody = searchParams.get('prefillBody')
+    let prefillReset = searchParams.get('prefillReset')
+    let prefillMeetingIds = searchParams.get('prefillMeetingIds')
+    let prefillCalendarHash = searchParams.get('prefillCalendarHash')
+    let prefillCalendarOnly = searchParams.get('prefillCalendarOnly') === '1'
+
+    // Fallback for flows where intermediate redirects/guards strip query params.
+    if (!prefillTitle && !prefillBody) {
+      try {
+        prefillTitle = sessionStorage.getItem('cm-ann-prefill-title')
+        prefillBody = sessionStorage.getItem('cm-ann-prefill-body')
+        prefillReset = sessionStorage.getItem('cm-ann-prefill-reset')
+        prefillMeetingIds = sessionStorage.getItem('cm-ann-prefill-meeting-ids')
+        prefillCalendarHash = sessionStorage.getItem('cm-ann-prefill-calendar-hash')
+        prefillCalendarOnly = sessionStorage.getItem('cm-ann-prefill-calendar-only') === '1'
+      } catch {
+        // ignore storage failures
+      }
+    }
 
     if (prefillTitle || prefillBody) {
       // When prefillReset is set, clear all cached compose state first
@@ -686,13 +700,25 @@ export default function AnnouncementsPage() {
       }
 
       // Clean up URL params after applying
-      searchParams.delete('prefillTitle')
-      searchParams.delete('prefillBody')
-      searchParams.delete('prefillReset')
-      searchParams.delete('prefillMeetingIds')
-      searchParams.delete('prefillCalendarHash')
-      searchParams.delete('prefillCalendarOnly')
-      setSearchParams(searchParams, { replace: true })
+      const next = new URLSearchParams(searchParams)
+      next.delete('prefillTitle')
+      next.delete('prefillBody')
+      next.delete('prefillReset')
+      next.delete('prefillMeetingIds')
+      next.delete('prefillCalendarHash')
+      next.delete('prefillCalendarOnly')
+      setSearchParams(next, { replace: true })
+
+      try {
+        sessionStorage.removeItem('cm-ann-prefill-title')
+        sessionStorage.removeItem('cm-ann-prefill-body')
+        sessionStorage.removeItem('cm-ann-prefill-reset')
+        sessionStorage.removeItem('cm-ann-prefill-meeting-ids')
+        sessionStorage.removeItem('cm-ann-prefill-calendar-hash')
+        sessionStorage.removeItem('cm-ann-prefill-calendar-only')
+      } catch {
+        // ignore storage failures
+      }
     }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 

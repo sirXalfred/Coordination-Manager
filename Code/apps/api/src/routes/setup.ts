@@ -57,10 +57,35 @@ import {
   verifySetupToken,
   isLocalhostRequest,
   DeploymentMode,
+  isMeaningfulEnvValue,
   type DisableableFeature,
 } from '../services/local-config.js'
 
 const router: Router = Router()
+
+async function probeSupabaseConnection(): Promise<{ ok: boolean; detail: string }> {
+  const url = process.env.SUPABASE_URL?.trim() || ''
+  const key = process.env.SUPABASE_KEY?.trim() || ''
+  if (!isMeaningfulEnvValue('SUPABASE_URL', url) || !isMeaningfulEnvValue('SUPABASE_KEY', key)) {
+    return { ok: false, detail: 'missing or placeholder credentials' }
+  }
+
+  const endpoint = `${url.replace(/\/$/, '')}/rest/v1/`
+  try {
+    const res = await fetch(endpoint, {
+      method: 'GET',
+      headers: {
+        Accept: 'application/json',
+        apikey: key,
+        Authorization: `Bearer ${key}`,
+      },
+    })
+    if (res.ok) return { ok: true, detail: `HTTP ${res.status}` }
+    return { ok: false, detail: `HTTP ${res.status}` }
+  } catch (err) {
+    return { ok: false, detail: (err as Error).message }
+  }
+}
 
 /**
  * Block all /api/setup/* endpoints in production. The setup wizard is a
@@ -82,6 +107,7 @@ router.get('/status', async (_req: Request, res: Response, next: NextFunction) =
   try {
     const localConfig = await readLocalConfig()
     const env = getRequiredEnvStatus()
+    const databaseProbe = await probeSupabaseConnection()
 
     // Derive the effective mode. The wizard may have written one; otherwise
     // we infer from env presence.
@@ -102,6 +128,9 @@ router.get('/status', async (_req: Request, res: Response, next: NextFunction) =
       required: {
         api: [...REQUIRED_API_KEYS],
         web: [...REQUIRED_WEB_KEYS],
+      },
+      probes: {
+        database: databaseProbe,
       },
       // Per-feature configured flags. Frontend uses these to render
       // "feature disabled, configure in Setup" banners instead of letting

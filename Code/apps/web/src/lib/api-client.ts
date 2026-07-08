@@ -24,6 +24,141 @@ export const apiClient = axios.create({
   },
 });
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function isTransientNetworkError(error: unknown): boolean {
+  if (!isRecord(error)) {
+    return false;
+  }
+
+  const code = typeof error.code === 'string' ? error.code : '';
+  const message = typeof error.message === 'string' ? error.message : '';
+  const hasResponse = isRecord(error.response);
+
+  if (hasResponse) {
+    return false;
+  }
+
+  return (
+    code === 'ERR_NETWORK' ||
+    code === 'ECONNABORTED' ||
+    message.includes('Network Error') ||
+    message.includes('timeout')
+  );
+}
+
+function canRetryRequest(config: unknown): config is Record<string, unknown> {
+  if (!isRecord(config)) {
+    return false;
+  }
+
+  const method = typeof config.method === 'string' ? config.method.toLowerCase() : 'get';
+  return method === 'get' || method === 'head';
+}
+
+interface SessionRefreshOutcome {
+  accessToken: string | null;
+  error: unknown;
+}
+
+let refreshSessionInFlight: Promise<SessionRefreshOutcome> | null = null;
+
+function getErrorMessage(error: unknown): string {
+  if (!isRecord(error)) {
+    return '';
+  }
+  return typeof error.message === 'string' ? error.message : '';
+}
+
+function getErrorStatus(error: unknown): number | null {
+  if (!isRecord(error) || !isRecord(error.response)) {
+    return null;
+  }
+  const status = error.response.status;
+  return typeof status === 'number' ? status : null;
+}
+
+function isTransientAuthServiceError(error: unknown): boolean {
+  if (!error) {
+    return true;
+  }
+
+  if (isTransientNetworkError(error)) {
+    return true;
+  }
+
+  const status = getErrorStatus(error);
+  return status !== null && status >= 500;
+}
+
+function isDefinitiveAuthRefreshFailure(error: unknown): boolean {
+  if (!error) {
+    return false;
+  }
+
+  const status = getErrorStatus(error);
+  if (status === 400 || status === 401 || status === 403) {
+    return true;
+  }
+
+  const message = getErrorMessage(error).toLowerCase();
+  return (
+    message.includes('invalid_grant') ||
+    message.includes('refresh token') ||
+    message.includes('session not found') ||
+    message.includes('auth session missing') ||
+    message.includes('jwt expired')
+  );
+}
+
+function shouldForceLogoutForRefreshFailure(error: unknown): boolean {
+  if (isTransientAuthServiceError(error)) {
+    return false;
+  }
+
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+    return false;
+  }
+
+  return isDefinitiveAuthRefreshFailure(error);
+}
+
+function redirectToLogin(): void {
+  if (typeof window === 'undefined') {
+    return;
+  }
+  if (window.location.pathname !== '/auth/login') {
+    window.location.href = '/auth/login';
+  }
+}
+
+async function refreshSessionSingleFlight(): Promise<SessionRefreshOutcome> {
+  if (refreshSessionInFlight) {
+    return refreshSessionInFlight;
+  }
+
+  refreshSessionInFlight = (async () => {
+    try {
+      const { data, error: refreshError } = await supabase.auth.refreshSession();
+      if (refreshError || !data.session?.access_token) {
+        return {
+          accessToken: null,
+          error: refreshError || new Error('No session returned from refreshSession'),
+        };
+      }
+      return { accessToken: data.session.access_token, error: null };
+    } catch (refreshError) {
+      return { accessToken: null, error: refreshError };
+    } finally {
+      refreshSessionInFlight = null;
+    }
+  })();
+
+  return refreshSessionInFlight;
+}
+
 // Attach Supabase auth token to every request when available
 apiClient.interceptors.request.use(async (config) => {
   // Skip if Authorization header is already set (e.g. fetchUserProfile)
@@ -91,7 +226,7 @@ apiClient.interceptors.response.use(
     return response;
   },
   async (error) => {
-    const originalRequest = error.config;
+    const originalRequest = error.config as Record<string, unknown> | undefined;
 
     // Handle 429 Too Many Requests — extract and rethrow with server message
     if (error.response?.status === 429) {
@@ -102,25 +237,40 @@ apiClient.interceptors.response.use(
       return Promise.reject(enhancedError);
     }
 
-    // Only attempt refresh once per request, and only on 401
-    if (error.response?.status === 401 && !originalRequest._retried) {
+    // Retry idempotent requests once when the network is transiently unavailable.
+    if (originalRequest && canRetryRequest(originalRequest) && isTransientNetworkError(error)) {
+      const hasRetried = originalRequest._networkRetried === true;
+      if (!hasRetried) {
+        originalRequest._networkRetried = true;
+        await new Promise((resolve) => setTimeout(resolve, 400));
+        return apiClient(originalRequest);
+      }
+    }
+
+    // Only attempt refresh once per request, and only on 401.
+    // Keep refresh single-flight so parallel tab requests share one token refresh.
+    if (error.response?.status === 401 && originalRequest && !originalRequest._retried) {
       originalRequest._retried = true;
 
       try {
-        const { data, error: refreshError } = await supabase.auth.refreshSession();
-        if (refreshError || !data.session) {
-          // Refresh failed — sign out and redirect to login
-          await supabase.auth.signOut();
-          window.location.href = '/auth/login';
+        const refreshOutcome = await refreshSessionSingleFlight();
+        if (!refreshOutcome.accessToken) {
+          if (shouldForceLogoutForRefreshFailure(refreshOutcome.error)) {
+            await supabase.auth.signOut();
+            redirectToLogin();
+          }
           return Promise.reject(error);
         }
 
         // Retry the original request with the new token
-        originalRequest.headers.Authorization = `Bearer ${data.session.access_token}`;
+        const headers = isRecord(originalRequest.headers)
+          ? originalRequest.headers
+          : {};
+        headers.Authorization = `Bearer ${refreshOutcome.accessToken}`;
+        originalRequest.headers = headers;
         return apiClient(originalRequest);
       } catch {
-        await supabase.auth.signOut();
-        window.location.href = '/auth/login';
+        // For unexpected refresh exceptions, avoid force-logout storms.
         return Promise.reject(error);
       }
     }

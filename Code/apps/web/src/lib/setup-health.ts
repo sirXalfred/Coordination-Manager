@@ -65,13 +65,24 @@ export function useComponentHealth(status: SetupStatus | null): {
     const next: HealthMap = {}
     next.api = await probeApi()
 
-    // Database -- isApiConfigured implies SUPABASE_URL + KEY are present.
-    // We can't safely probe Supabase from the browser without leaking the
-    // anon key here, but the connection is exercised by the API itself, so
-    // a live API + isApiConfigured is a reasonable proxy for "configured".
-    next.database = status?.isApiConfigured
-      ? { state: 'configured', detail: 'env present', checkedAt: Date.now() }
-      : { state: 'off' }
+    const dbProbe = status?.probes?.database
+    if (!status?.isApiConfigured) {
+      next.database = { state: 'off' }
+    } else if (dbProbe?.ok) {
+      next.database = {
+        state: 'live',
+        detail: dbProbe.detail || 'probe ok',
+        checkedAt: Date.now(),
+      }
+    } else if (dbProbe && !dbProbe.ok) {
+      next.database = {
+        state: 'down',
+        detail: dbProbe.detail || 'probe failed',
+        checkedAt: Date.now(),
+      }
+    } else {
+      next.database = { state: 'configured', detail: 'env present', checkedAt: Date.now() }
+    }
 
     next.deployment = { state: 'configured', detail: 'inferred from running app' }
 

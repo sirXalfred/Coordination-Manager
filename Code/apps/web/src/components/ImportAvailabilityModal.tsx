@@ -17,7 +17,11 @@ interface ImportAvailabilityModalProps {
   open: boolean
   onClose: () => void
   onImport: (timeSlots: string[], username: string) => void
+  onPreview?: (timeSlots: string[] | null) => void
   currentCalendarHash: string
+  currentTimeInterval: 15 | 30 | 60
+  currentStartHour: number
+  currentEndHour: number
   /** Monday of the currently displayed week */
   currentWeekStart: Date
   /** Calendar's custom start date (yyyy-MM-dd) if set */
@@ -65,7 +69,11 @@ export default function ImportAvailabilityModal({
   open,
   onClose,
   onImport,
+  onPreview,
   currentCalendarHash,
+  currentTimeInterval,
+  currentStartHour,
+  currentEndHour,
   currentWeekStart,
   customStartDate,
   customEndDate,
@@ -81,7 +89,15 @@ export default function ImportAvailabilityModal({
     apiClient
       .get(`/api/availability/user/past?exclude_hash=${encodeURIComponent(currentCalendarHash)}`)
       .then(res => {
-        setEntries(res.data.entries || [])
+        const fetchedEntries = Array.isArray(res.data.entries) ? res.data.entries : []
+        const sortedEntries = [...fetchedEntries].sort((a, b) => {
+          const aTime = new Date(a.updated_at || '').getTime()
+          const bTime = new Date(b.updated_at || '').getTime()
+          const safeATime = Number.isFinite(aTime) ? aTime : 0
+          const safeBTime = Number.isFinite(bTime) ? bTime : 0
+          return safeBTime - safeATime
+        })
+        setEntries(sortedEntries)
       })
       .catch(() => {
         setError('Failed to load past availability')
@@ -89,10 +105,34 @@ export default function ImportAvailabilityModal({
       .finally(() => setLoading(false))
   }, [open, currentCalendarHash])
 
+  useEffect(() => {
+    if (!open) {
+      onPreview?.(null)
+    }
+  }, [open, onPreview])
+
+  const parseTimeParts = (timeStr: string): { hours: number; minutes: number } | null => {
+    const [hours, minutes] = timeStr.split(':').map(Number)
+    if (!Number.isInteger(hours) || !Number.isInteger(minutes)) return null
+    if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) return null
+    return { hours, minutes }
+  }
+
   /** Map imported slots to the current calendar's week(s) by day-of-week + time */
-  const handleRowClick = (entry: PastAvailabilityEntry) => {
+  const mapEntrySlotsToTargetWeeks = (entry: PastAvailabilityEntry): string[] => {
     const slots = entry.time_slots
-    if (!slots || slots.length === 0) return
+    if (!slots || slots.length === 0) return []
+
+    // Detect date/hour buckets that already contain explicit sub-hour slots.
+    // Only hour-root slots without finer-grained siblings should expand.
+    const hasSubHourForDateHour = new Set<string>()
+    for (const sourceSlot of slots) {
+      const [sourceDateStr, sourceTimeStr] = sourceSlot.split('_')
+      if (!sourceDateStr || !sourceTimeStr) continue
+      const parts = parseTimeParts(sourceTimeStr)
+      if (!parts || parts.minutes === 0) continue
+      hasSubHourForDateHour.add(`${sourceDateStr}_${parts.hours}`)
+    }
 
     // Determine the source availability's first Monday (week start)
     // Slot format: "YYYY-MM-DD_HH:mm"
@@ -117,7 +157,7 @@ export default function ImportAvailabilityModal({
 
     // Map each source slot to the target calendar week
     const targetMonday = currentWeekStart
-    const mappedSlots: string[] = []
+    const mappedSlots = new Set<string>()
 
     for (const slot of slots) {
       const [dateStr, timeStr] = slot.split('_')
@@ -141,9 +181,62 @@ export default function ImportAvailabilityModal({
       const yyyy = targetDate.getFullYear()
       const mmStr = String(targetDate.getMonth() + 1).padStart(2, '0')
       const ddStr = String(targetDate.getDate()).padStart(2, '0')
-      mappedSlots.push(`${yyyy}-${mmStr}-${ddStr}_${timeStr}`)
+      const parsedTargetTime = parseTimeParts(timeStr)
+      if (!parsedTargetTime) continue
+
+      const sourceDateHourKey = `${dateStr}_${parsedTargetTime.hours}`
+      const shouldExpandHourSlot =
+        currentTimeInterval < 60
+        && parsedTargetTime.minutes === 0
+        && !hasSubHourForDateHour.has(sourceDateHourKey)
+
+      if (shouldExpandHourSlot) {
+        for (let minute = 0; minute < 60; minute += currentTimeInterval) {
+          const minuteStr = minute.toString().padStart(2, '0')
+          mappedSlots.add(`${yyyy}-${mmStr}-${ddStr}_${parsedTargetTime.hours.toString().padStart(2, '0')}:${minuteStr}`)
+        }
+        continue
+      }
+
+      mappedSlots.add(`${yyyy}-${mmStr}-${ddStr}_${timeStr}`)
     }
 
+    return Array.from(mappedSlots)
+  }
+
+  type ImportMode = 'selected' | 'unselected'
+
+  const getImportSlots = (entry: PastAvailabilityEntry, mode: ImportMode): string[] => {
+    const selectedSlots = mapEntrySlotsToTargetWeeks(entry)
+    if (mode === 'selected' || selectedSlots.length === 0) return selectedSlots
+
+    const selectedSet = new Set(selectedSlots)
+    const targetDates = Array.from(new Set(selectedSlots.map(slot => slot.split('_')[0]).filter(Boolean)))
+    if (targetDates.length === 0) return []
+
+    const universe = new Set<string>()
+    for (const dateStr of targetDates) {
+      for (let hour = currentStartHour; hour < currentEndHour; hour++) {
+        for (let minute = 0; minute < 60; minute += currentTimeInterval) {
+          universe.add(`${dateStr}_${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}`)
+        }
+      }
+    }
+
+    const unselectedSlots: string[] = []
+    for (const slot of universe) {
+      if (!selectedSet.has(slot)) {
+        unselectedSlots.push(slot)
+      }
+    }
+    return unselectedSlots
+  }
+
+  const handleImport = (entry: PastAvailabilityEntry, mode: ImportMode) => {
+    const mappedSlots = getImportSlots(entry, mode)
+    if (mappedSlots.length === 0) return
+
+    onPreview?.(null)
     onImport(mappedSlots, entry.username)
     onClose()
   }
@@ -151,30 +244,31 @@ export default function ImportAvailabilityModal({
   if (!open) return null
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/30" onClick={onClose}>
-      <div
-        className="bg-card text-card-foreground rounded-lg p-6 max-w-2xl w-full mx-4 shadow-xl border border-border max-h-[80vh] flex flex-col"
-        onClick={e => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-bold flex items-center gap-2">
-            <Calendar className="w-5 h-5 text-purple-500" />
+    <aside
+      className="shrink-0 sticky top-0 h-screen w-[38.5rem] sm:w-[42rem] max-w-[95vw] bg-card text-card-foreground border-l border-border shadow-xl flex flex-col"
+    >
+        <div className="flex items-center justify-between px-4 py-3 border-b border-border bg-muted/30">
+          <h2 className="text-base font-bold flex items-center gap-2">
+            <Calendar className="w-4 h-4 text-purple-500" />
             Import Availability
           </h2>
           <button
             onClick={onClose}
             className="p-1 rounded-md hover:bg-muted text-muted-foreground"
+            aria-label="Close import availability panel"
           >
             <X className="w-5 h-5" />
           </button>
         </div>
 
-        <p className="text-sm text-muted-foreground mb-1">
-          Select a previous calendar to import your availability as the current selection.
-        </p>
-        <p className="text-xs text-muted-foreground mb-4">
-          Date format: (dd.mm.yy)
-        </p>
+        <div className="px-4 pt-3 pb-2">
+          <p className="text-sm text-muted-foreground">
+            Choose whether to import selected or unselected time from a previous calendar.
+          </p>
+          <p className="text-xs text-muted-foreground mt-1">
+            Sorted by latest change first. Date format: (dd.mm.yy)
+          </p>
+        </div>
 
         {loading && (
           <div className="flex items-center justify-center py-8">
@@ -187,19 +281,26 @@ export default function ImportAvailabilityModal({
         )}
 
         {!loading && !error && entries.length === 0 && (
-          <div className="text-sm text-muted-foreground py-8 text-center">
+          <div className="text-sm text-muted-foreground py-8 text-center px-4">
             No past availability found in other calendars.
           </div>
         )}
 
         {!loading && !error && entries.length > 0 && (
-          <div className="overflow-y-auto flex-1 -ml-2">
-            <table className="w-full text-sm">
+          <div className="overflow-y-auto flex-1">
+            <table className="w-full text-sm table-fixed">
+              <colgroup>
+                <col className="w-[30%]" />
+                <col className="w-[26%]" />
+                <col className="w-[14%]" />
+                <col className="w-[30%]" />
+              </colgroup>
               <thead className="sticky top-0 bg-card">
                 <tr className="border-b border-border text-left">
                   <th className="px-2 py-2 font-medium text-muted-foreground">Date Range</th>
-                  <th className="px-2 py-2 font-medium text-muted-foreground">Calendar</th>
+                  <th className="px-2 py-2 font-medium text-muted-foreground">Coord. Calendar</th>
                   <th className="px-2 pr-4 py-2 font-medium text-muted-foreground text-right">Entries</th>
+                  <th className="px-2 py-2 font-medium text-muted-foreground">Import</th>
                 </tr>
               </thead>
               <tbody>
@@ -214,7 +315,9 @@ export default function ImportAvailabilityModal({
                   return (
                     <tr
                       key={`${entry.calendar_id}-${entry.username}-${idx}`}
-                      onClick={() => handleRowClick(entry)}
+                      onClick={() => handleImport(entry, 'selected')}
+                      onMouseEnter={() => onPreview?.(getImportSlots(entry, 'selected'))}
+                      onMouseLeave={() => onPreview?.(null)}
                       className="border-b border-border/50 cursor-pointer hover:bg-purple-50 dark:hover:bg-purple-950/30 transition-colors"
                     >
                       <td className="px-2 py-2.5 whitespace-nowrap text-foreground">
@@ -223,17 +326,49 @@ export default function ImportAvailabilityModal({
                           {displayRange}
                         </div>
                         {weekdayLabel && (
-                          <div className="text-xs text-muted-foreground ml-5">{weekdayLabel}</div>
+                          <div className="text-xs text-muted-foreground ml-5 truncate">{weekdayLabel}</div>
                         )}
                       </td>
-                      <td className="px-2 py-2.5 text-foreground">
-                        <div className="truncate max-w-[280px]" title={entry.calendar_title}>
+                      <td className="px-2 py-2.5 text-foreground min-w-0">
+                        <div className="truncate" title={entry.calendar_title}>
                           {entry.calendar_title}
                         </div>
-                        <div className="text-xs text-muted-foreground">as {entry.username}</div>
+                        <div className="text-xs text-muted-foreground truncate">as {entry.username}</div>
                       </td>
-                      <td className="px-2 pr-4 py-2.5 text-right font-medium text-foreground">
+                      <td className="px-2 pr-4 py-2.5 text-right font-medium text-foreground whitespace-nowrap">
                         {entry.entry_count}h
+                      </td>
+                      <td className="px-2 py-2.5">
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              handleImport(entry, 'selected')
+                            }}
+                            onMouseEnter={(e) => {
+                              e.stopPropagation()
+                              onPreview?.(getImportSlots(entry, 'selected'))
+                            }}
+                            className="px-2 py-1 rounded-md text-[11px] font-medium border border-cyan-300 text-cyan-700 hover:bg-cyan-50 dark:border-cyan-700 dark:text-cyan-300 dark:hover:bg-cyan-950/30"
+                          >
+                            Selected
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              handleImport(entry, 'unselected')
+                            }}
+                            onMouseEnter={(e) => {
+                              e.stopPropagation()
+                              onPreview?.(getImportSlots(entry, 'unselected'))
+                            }}
+                            className="px-2 py-1 rounded-md text-[11px] font-medium border border-amber-300 text-amber-700 hover:bg-amber-50 dark:border-amber-700 dark:text-amber-300 dark:hover:bg-amber-950/30"
+                          >
+                            Unselected
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   )
@@ -242,7 +377,6 @@ export default function ImportAvailabilityModal({
             </table>
           </div>
         )}
-      </div>
-    </div>
+    </aside>
   )
 }

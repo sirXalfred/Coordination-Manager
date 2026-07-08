@@ -30,12 +30,25 @@ export function errorHandler(
   res: Response,
   _next: NextFunction
 ) {
-  console.error('Error:', {
-    message: error.message,
-    stack: error.stack,
-    path: req.path,
-    method: req.method,
-  })
+  const isExpectedMissingToken =
+    error instanceof UnauthorizedError &&
+    error.message === 'Missing authentication token'
+
+  if (isExpectedMissingToken) {
+    // Common unauthenticated probe traffic should not emit noisy stack traces.
+    console.warn('Auth warning:', {
+      message: error.message,
+      path: req.path,
+      method: req.method,
+    })
+  } else {
+    console.error('Error:', {
+      message: error.message,
+      stack: error.stack,
+      path: req.path,
+      method: req.method,
+    })
+  }
 
   if (error instanceof ApplicationError) {
     return res.status(error.statusCode).json({

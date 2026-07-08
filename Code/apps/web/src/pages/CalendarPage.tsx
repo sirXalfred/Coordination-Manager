@@ -8,7 +8,7 @@ import DualThumbSlider from '../components/DualThumbSlider'
 import LearnerHelpIcon from '../components/LearnerHelpIcon'
 import { useLearnerMode } from '../contexts/LearnerModeContext'
 import { useAiAssistant } from '../contexts/AiAssistantContext'
-import { LeftPanelPortal } from '../contexts/LayoutContext'
+import { LeftPanelPortal, RightPanelPortal } from '../contexts/LayoutContext'
 import MeetingSidePanel from '../components/MeetingSidePanel'
 import { isSafeUrl } from '../lib/calendar-utils'
 import { useToast } from '../components/Toast'
@@ -171,6 +171,8 @@ type TimeManagementEventRecord = {
 
 const DAY_MS = 24 * 60 * 60 * 1000
 const RECURRENCE_MAX_LOOKAHEAD_DAYS = 365 * 20
+const TIME_MANAGEMENT_SYNC_CHANNEL = 'coord-time-management-sync'
+const TIME_MANAGEMENT_SYNC_STORAGE_KEY = 'coord-time-management-sync-ping'
 
 function isRecurrenceType(value: unknown): value is RecurrenceRule['type'] {
   return value === 'none' || value === 'weekly' || value === 'biweekly' || value === 'monthly' || value === 'custom'
@@ -543,6 +545,7 @@ export default function CalendarPage() {
   const [timeManagementModes, setTimeManagementModes] = useState<TimeManagementMode[]>([])
   const [timeManagementCategories, setTimeManagementCategories] = useState<TimeManagementCategory[]>([])
   const [timeManagementEvents, setTimeManagementEvents] = useState<TimeManagementEventRecord[]>([])
+  const timeManagementRefreshTimerRef = useRef<number | null>(null)
   
   // Google Calendar busy times state
   const [busyBlocks, setBusyBlocks] = useState<BusyBlock[]>([])
@@ -612,6 +615,37 @@ export default function CalendarPage() {
     return lines.join('\n')
   }
 
+  // Persist compose prefill so redirects/guards that drop query params
+  // still land on Announcements with the intended invite draft.
+  const persistAnnouncementsPrefill = (
+    prefillTitle: string,
+    prefillBody: string,
+    opts?: { meetingIds?: string[]; calendarHash?: string; calendarOnly?: boolean }
+  ): void => {
+    try {
+      sessionStorage.setItem('cm-ann-prefill-title', prefillTitle)
+      sessionStorage.setItem('cm-ann-prefill-body', prefillBody)
+      sessionStorage.setItem('cm-ann-prefill-reset', '1')
+      if (opts?.meetingIds && opts.meetingIds.length > 0) {
+        sessionStorage.setItem('cm-ann-prefill-meeting-ids', opts.meetingIds.join(','))
+      } else {
+        sessionStorage.removeItem('cm-ann-prefill-meeting-ids')
+      }
+      if (opts?.calendarHash) {
+        sessionStorage.setItem('cm-ann-prefill-calendar-hash', opts.calendarHash)
+      } else {
+        sessionStorage.removeItem('cm-ann-prefill-calendar-hash')
+      }
+      if (opts?.calendarOnly) {
+        sessionStorage.setItem('cm-ann-prefill-calendar-only', '1')
+      } else {
+        sessionStorage.removeItem('cm-ann-prefill-calendar-only')
+      }
+    } catch {
+      // ignore storage failures (private mode / quota / policy)
+    }
+  }
+
   // Selected participants for orange highlighting
   const [selectedParticipants, setSelectedParticipants] = useState<Set<string>>(new Set())
   // Tooltip position for desktop hover panel
@@ -643,7 +677,10 @@ export default function CalendarPage() {
 
   // Import availability from another calendar
   const [showImportModal, setShowImportModal] = useState(false)
+  const [importPreviewSelection, setImportPreviewSelection] = useState<Set<string>>(new Set())
   const [hasPastAvailability, setHasPastAvailability] = useState(false)
+  const actionControlsRowRef = useRef<HTMLDivElement | null>(null)
+  const [actionRowCompactStep, setActionRowCompactStep] = useState(0)
 
   // Hour slider preview state (progressive stepping to avoid reflow feedback loop)
   const [previewStartHour, setPreviewStartHour] = useState<number | null>(null)
@@ -747,6 +784,58 @@ export default function CalendarPage() {
       if (endHourTimerRef.current) clearInterval(endHourTimerRef.current)
     }
   }, [])
+
+  useEffect(() => {
+    if (!roomHash) return
+    const rowElement = actionControlsRowRef.current
+    if (!rowElement) return
+
+    const getCompactStep = (rowWidth: number): number => {
+      // In non-layout environments (tests), keep full labels.
+      if (!Number.isFinite(rowWidth) || rowWidth <= 0) return 0
+      if (rowWidth <= 780) return 6
+      if (rowWidth <= 860) return 5
+      if (rowWidth <= 940) return 4
+      if (rowWidth <= 1020) return 3
+      if (rowWidth <= 1100) return 2
+      if (rowWidth <= 1180) return 1
+      return 0
+    }
+
+    const updateCompactStep = () => {
+      const rowWidth = rowElement.getBoundingClientRect().width
+      const nextStep = getCompactStep(rowWidth)
+      setActionRowCompactStep(prev => (prev === nextStep ? prev : nextStep))
+    }
+
+    updateCompactStep()
+
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', updateCompactStep)
+      return () => window.removeEventListener('resize', updateCompactStep)
+    }
+
+    const observer = new ResizeObserver(() => updateCompactStep())
+    observer.observe(rowElement)
+    return () => observer.disconnect()
+  }, [roomHash, hasPastAvailability, isCreator, isCreatingMeeting, isAuthenticated, currentSelection.size])
+
+  const createMeetingButtonText = actionRowCompactStep >= 5
+    ? ''
+    : actionRowCompactStep >= 4
+      ? 'Meeting'
+      : actionRowCompactStep >= 1
+        ? 'Meeting Time'
+        : 'Create Meeting Time'
+  const aiAssistantButtonText = actionRowCompactStep >= 6
+    ? ''
+    : actionRowCompactStep >= 2
+      ? 'AI'
+      : 'AI Assistant'
+  const importButtonText = actionRowCompactStep >= 3 ? '' : 'Import'
+  const useCompactButtonPadding = actionRowCompactStep >= 3
+  const toolsSidebarWidthClass = 'w-[20rem] xl:w-[22rem] 2xl:w-[24rem]'
+  const toolsSidebarInnerWidthClass = `${toolsSidebarWidthClass} min-w-[20rem]`
 
   const handleStartHourSlider = (target: number) => {
     setPreviewStartHour(target)
@@ -1632,6 +1721,58 @@ export default function CalendarPage() {
   useEffect(() => {
     fetchTimeManagementSources()
   }, [fetchTimeManagementSources])
+
+  useEffect(() => {
+    if (!isAuthenticated || typeof window === 'undefined') return
+
+    const scheduleRefresh = () => {
+      if (timeManagementRefreshTimerRef.current !== null) {
+        window.clearTimeout(timeManagementRefreshTimerRef.current)
+      }
+      timeManagementRefreshTimerRef.current = window.setTimeout(() => {
+        timeManagementRefreshTimerRef.current = null
+        void fetchTimeManagementSources()
+      }, 180)
+    }
+
+    const onStorage = (event: StorageEvent) => {
+      if (event.key !== TIME_MANAGEMENT_SYNC_STORAGE_KEY || !event.newValue) return
+      scheduleRefresh()
+    }
+
+    const onWindowFocus = () => {
+      scheduleRefresh()
+    }
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        scheduleRefresh()
+      }
+    }
+
+    let channel: BroadcastChannel | null = null
+    if (typeof BroadcastChannel !== 'undefined') {
+      channel = new BroadcastChannel(TIME_MANAGEMENT_SYNC_CHANNEL)
+      channel.onmessage = () => {
+        scheduleRefresh()
+      }
+    }
+
+    window.addEventListener('storage', onStorage)
+    window.addEventListener('focus', onWindowFocus)
+    document.addEventListener('visibilitychange', onVisibilityChange)
+
+    return () => {
+      if (timeManagementRefreshTimerRef.current !== null) {
+        window.clearTimeout(timeManagementRefreshTimerRef.current)
+        timeManagementRefreshTimerRef.current = null
+      }
+      window.removeEventListener('storage', onStorage)
+      window.removeEventListener('focus', onWindowFocus)
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+      channel?.close()
+    }
+  }, [fetchTimeManagementSources, isAuthenticated])
 
   useEffect(() => {
     if (!isAuthenticated || typeof window === 'undefined') return
@@ -2807,11 +2948,77 @@ export default function CalendarPage() {
     return `${format(origDate, 'yyyy-MM-dd')}_${timeStr}`
   }
 
+  // Parse HH:mm safely from a cellId time segment.
+  const parseTimeParts = (timeStr: string): { hours: number; minutes: number } | null => {
+    const [hours, minutes] = timeStr.split(':').map(Number)
+    if (!Number.isInteger(hours) || !Number.isInteger(minutes)) return null
+    if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) return null
+    return { hours, minutes }
+  }
+
+  // If a user only has HH:00 for an hour and no finer entries for that same hour,
+  // treat it as full-hour availability when viewing 30m/15m grids.
+  const hasImplicitHourCoverageForDate = (
+    selections: Set<string>,
+    dateStr: string,
+    hours: number,
+    minutes: number
+  ): boolean => {
+    if (timeInterval >= 60 || minutes === 0) return false
+
+    const hourPrefix = `${dateStr}_${hours.toString().padStart(2, '0')}:`
+    const rootSlot = `${dateStr}_${hours.toString().padStart(2, '0')}:00`
+
+    let hasRootSlot = false
+    let hasSpecificSubHourSlot = false
+
+    for (const savedCellId of selections) {
+      if (!savedCellId.startsWith(hourPrefix)) continue
+      const savedTimeStr = savedCellId.split('_')[1]
+      if (!savedTimeStr) continue
+      const savedParts = parseTimeParts(savedTimeStr)
+      if (!savedParts) continue
+      if (savedParts.minutes === 0) hasRootSlot = true
+      else hasSpecificSubHourSlot = true
+    }
+
+    return hasRootSlot && !hasSpecificSubHourSlot && selections.has(rootSlot)
+  }
+
+  const hasImplicitHourCoverageForWeekday = (
+    selections: Set<string>,
+    dayOfWeek: number,
+    hours: number,
+    minutes: number
+  ): boolean => {
+    if (timeInterval >= 60 || minutes === 0) return false
+
+    let hasRootSlot = false
+    let hasSpecificSubHourSlot = false
+
+    for (const savedCellId of selections) {
+      const [savedDateStr, savedTimeStr] = savedCellId.split('_')
+      if (!savedDateStr || !savedTimeStr) continue
+      const savedDate = parse(savedDateStr, 'yyyy-MM-dd', new Date())
+      if (!isValid(savedDate) || getDay(savedDate) !== dayOfWeek) continue
+
+      const savedParts = parseTimeParts(savedTimeStr)
+      if (!savedParts || savedParts.hours !== hours) continue
+
+      if (savedParts.minutes === 0) hasRootSlot = true
+      else hasSpecificSubHourSlot = true
+    }
+
+    return hasRootSlot && !hasSpecificSubHourSlot
+  }
+
   // For weekly availability: find all saved cellIds that match a given cellId by day-of-week + time
   const findMatchingSavedSlots = (selections: Set<string>, cellId: string): string[] => {
     const [dateStr, timeStr] = cellId.split('_')
     const cellDate = parse(dateStr, 'yyyy-MM-dd', new Date())
     if (!isValid(cellDate)) return []
+    const timeParts = parseTimeParts(timeStr)
+    if (!timeParts) return []
     const cellDayOfWeek = getDay(cellDate)
     const matches: string[] = []
     for (const savedCellId of selections) {
@@ -2822,6 +3029,20 @@ export default function CalendarPage() {
         matches.push(savedCellId)
       }
     }
+
+    // Backward compatibility: hour-only entries should match sub-slots when finer grid is active.
+    if (matches.length === 0 && hasImplicitHourCoverageForWeekday(selections, cellDayOfWeek, timeParts.hours, timeParts.minutes)) {
+      const hourRootTime = `${timeParts.hours.toString().padStart(2, '0')}:00`
+      for (const savedCellId of selections) {
+        const [savedDateStr, savedTimeStr] = savedCellId.split('_')
+        if (!savedDateStr || savedTimeStr !== hourRootTime) continue
+        const savedDate = parse(savedDateStr, 'yyyy-MM-dd', new Date())
+        if (isValid(savedDate) && getDay(savedDate) === cellDayOfWeek) {
+          matches.push(savedCellId)
+        }
+      }
+    }
+
     return matches
   }
 
@@ -2901,7 +3122,27 @@ export default function CalendarPage() {
       })
       slotsToRemove = matched
     } else {
-      slotsToRemove = currentSelection
+      const existing = savedSelections.get(username.trim())
+      if (!existing) {
+        setCurrentSelection(new Set())
+        return
+      }
+      const matched = new Set<string>()
+      currentSelection.forEach(slot => {
+        if (existing.has(slot)) {
+          matched.add(slot)
+          return
+        }
+
+        const [dateStr, timeStr] = slot.split('_')
+        if (!dateStr || !timeStr) return
+        const timeParts = parseTimeParts(timeStr)
+        if (!timeParts) return
+        if (hasImplicitHourCoverageForDate(existing, dateStr, timeParts.hours, timeParts.minutes)) {
+          matched.add(`${dateStr}_${timeParts.hours.toString().padStart(2, '0')}:00`)
+        }
+      })
+      slotsToRemove = matched
     }
 
     // Remove selected slots from this user's saved selections
@@ -2963,6 +3204,7 @@ export default function CalendarPage() {
       setUsername(importedUsername)
     }
 
+    setImportPreviewSelection(new Set())
     setLoadError('')
   }
 
@@ -2970,25 +3212,37 @@ export default function CalendarPage() {
   // Calculate how many users are available at a cell (for heatmap)
   const getCellAvailability = (cellId: string): string[] => {
     const users: string[] = []
+    const [dateStr, timeStr] = cellId.split('_')
+    const timeParts = parseTimeParts(timeStr || '')
     if (hideDateNumbers) {
       // Weekly availability: match by day-of-week + time, ignoring the specific date
-      const [dateStr, timeStr] = cellId.split('_')
       const cellDate = parse(dateStr, 'yyyy-MM-dd', new Date())
       const cellDayOfWeek = isValid(cellDate) ? getDay(cellDate) : -1 // 0=Sun..6=Sat
       savedSelections.forEach((selections, user) => {
+        let hasMatch = false
         for (const savedCellId of selections) {
           const [savedDateStr, savedTimeStr] = savedCellId.split('_')
           if (savedTimeStr !== timeStr) continue
           const savedDate = parse(savedDateStr, 'yyyy-MM-dd', new Date())
           if (isValid(savedDate) && getDay(savedDate) === cellDayOfWeek) {
             users.push(user)
+            hasMatch = true
             break // found a match for this user, no need to check more
           }
+        }
+
+        if (!hasMatch && timeParts && hasImplicitHourCoverageForWeekday(selections, cellDayOfWeek, timeParts.hours, timeParts.minutes)) {
+          users.push(user)
         }
       })
     } else {
       savedSelections.forEach((selections, user) => {
         if (selections.has(cellId)) {
+          users.push(user)
+          return
+        }
+
+        if (timeParts && hasImplicitHourCoverageForDate(selections, dateStr, timeParts.hours, timeParts.minutes)) {
           users.push(user)
         }
       })
@@ -3886,6 +4140,7 @@ export default function CalendarPage() {
         <MeetingSidePanel
           isOpen={showMeetingSidePanel && !!pendingMeetingCellId}
           cellId={pendingMeetingCellId}
+          widthClassName={showLeftSidebar ? toolsSidebarInnerWidthClass : 'w-80 min-w-[20rem]'}
           duration={meetingFormData.duration}
           recurrenceRule={meetingFormData.recurrenceRule}
           meetingLink={meetingFormData.meetingLink}
@@ -4012,6 +4267,7 @@ export default function CalendarPage() {
             setIsCreatingMeeting(false)
             setMeetingCreationSelection(new Set())
             setLeftPanelOrder(prev => prev.filter(p => p !== 'meetingForm'))
+            clearSuggestions()
           }}
         />
         </div>
@@ -4024,10 +4280,10 @@ export default function CalendarPage() {
           className={`
             shrink-0 sticky top-0 h-screen overflow-hidden
             transition-all duration-300 ease-in-out
-            ${showLeftSidebar ? 'w-80' : 'w-0'}
+            ${showLeftSidebar ? toolsSidebarWidthClass : 'w-0'}
           `}
         >
-          <div className="w-80 min-w-[20rem] h-full flex flex-col bg-card border-r-2 border-border shadow-xl">
+          <div className={`${toolsSidebarInnerWidthClass} h-full flex flex-col bg-card border-r-2 border-border shadow-xl`}>
           {/* Sidebar Header */}
           <div className="flex items-center justify-between px-4 py-3 border-b border-border bg-muted/30">
             <h3 className="text-sm font-bold text-foreground">Tools</h3>
@@ -4255,10 +4511,10 @@ export default function CalendarPage() {
                             </div>
 
                             {sourceErrors.some(se => checkedSourceIds.has(se.sourceId)) && (
-                              <div className="p-2 bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 rounded-lg">
+                              <div className="p-2.5 bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 rounded-lg">
                                 <div className="flex items-start gap-1.5">
                                   <AlertTriangle className="w-3.5 h-3.5 text-amber-500 mt-0.5 flex-shrink-0" />
-                                  <div className="min-w-0">
+                                  <div className="min-w-0 w-full space-y-1">
                                     {(() => {
                                       const active = sourceErrors.filter(se => checkedSourceIds.has(se.sourceId))
                                       return (<>
@@ -4266,7 +4522,7 @@ export default function CalendarPage() {
                                           {active.length === 1 ? '1 calendar' : `${active.length} calendars`} need attention
                                         </p>
                                         {active.map(se => (
-                                          <p key={se.sourceId} className="text-[10px] text-amber-700 dark:text-amber-300 truncate" title={se.error}>
+                                          <p key={se.sourceId} className="text-[10px] text-amber-700 dark:text-amber-300 whitespace-normal break-words leading-snug" title={se.error}>
                                             {se.displayName}: {se.error}
                                           </p>
                                         ))}
@@ -4320,8 +4576,15 @@ export default function CalendarPage() {
                                   <span className="text-xs text-foreground truncate flex-1" title={mode.name}>
                                     {mode.name}
                                   </span>
-                                  <span className={`text-[9px] font-medium px-1 py-0.5 rounded flex-shrink-0 ${isChecked ? 'text-purple-700 bg-purple-50 border border-purple-200' : 'text-muted-foreground bg-muted/50 border border-border'}`}>
-                                    mode
+                                  <span
+                                    className={`text-[9px] font-medium px-1 py-0.5 rounded flex-shrink-0 ${
+                                      isChecked
+                                        ? 'text-green-600 bg-green-50 border border-green-200'
+                                        : 'text-red-600 bg-red-50 border border-red-200'
+                                    }`}
+                                    title={isChecked ? 'Busy times are synced from Time Management' : 'Not selected - check to sync busy times from Time Management'}
+                                  >
+                                    {isChecked ? 'sync' : 'not synced'}
                                   </span>
                                 </label>
                               )
@@ -4449,6 +4712,12 @@ export default function CalendarPage() {
                       .map(idx => confirmedMeetings[idx]?.id)
                       .filter((id): id is string => Boolean(id))
 
+                    persistAnnouncementsPrefill(prefillTitle, prefillBody, {
+                      meetingIds: selectedMeetingDbIds,
+                      calendarHash: roomHash || undefined,
+                      calendarOnly: false,
+                    })
+
                     const params = new URLSearchParams({
                       tab: 'compose',
                       prefillReset: '1',
@@ -4481,6 +4750,11 @@ export default function CalendarPage() {
                       ? `Planning invite: ${titleText}`
                       : 'Planning invite'
                     const prefillBody = buildInviteBody(greeting)
+
+                    persistAnnouncementsPrefill(prefillTitle, prefillBody, {
+                      calendarHash: roomHash || undefined,
+                      calendarOnly: true,
+                    })
 
                     // Planning invite -- attach the calendar itself only, no individual meetings.
                     const params = new URLSearchParams({
@@ -4616,6 +4890,26 @@ export default function CalendarPage() {
         </aside>
       )}
       </LeftPanelPortal>
+
+      {/* Right panel -- Import Availability (push) */}
+      <RightPanelPortal>
+        <ImportAvailabilityModal
+          open={showImportModal}
+          onClose={() => {
+            setShowImportModal(false)
+            setImportPreviewSelection(new Set())
+          }}
+          onImport={handleImportAvailability}
+          onPreview={(timeSlots) => setImportPreviewSelection(new Set(timeSlots || []))}
+          currentCalendarHash={roomHash}
+          currentTimeInterval={timeInterval}
+          currentStartHour={startHour}
+          currentEndHour={endHour}
+          currentWeekStart={currentWeekStart}
+          customStartDate={customStartDate}
+          customEndDate={customEndDate}
+        />
+      </RightPanelPortal>
 
       {/* Mobile UX Tip Banner */}
       {showLandscapeTip && isMobile && (
@@ -5509,7 +5803,7 @@ export default function CalendarPage() {
                           </div>
                         </div>
                         {isSafeUrl(meeting.meetingLink) && (
-                          <div className="pl-6">
+                          <div className={hasExportTargets ? 'pl-6 min-w-0' : 'min-w-0'}>
                             <a 
                               href={meeting.meetingLink}
                               target="_blank"
@@ -5523,10 +5817,22 @@ export default function CalendarPage() {
                           </div>
                         )}
                         {meeting.description && (
-                          <div className="pl-6">
-                            <div className="text-xs text-amber-700 flex items-center gap-1">
-                              <FileText className="w-3 h-3" />
-                              {meeting.description.length > 30 ? meeting.description.substring(0, 30) + '...' : meeting.description}
+                          <div className={hasExportTargets ? 'pl-6 min-w-0' : 'min-w-0'}>
+                            <div className="text-xs text-amber-700 flex items-start gap-1 min-w-0 leading-snug">
+                              <FileText className="w-3 h-3 mt-0.5 shrink-0" />
+                              <span
+                                className="min-w-0 overflow-hidden"
+                                style={{
+                                  display: '-webkit-box',
+                                  WebkitLineClamp: 2,
+                                  WebkitBoxOrient: 'vertical',
+                                  hyphens: 'auto',
+                                  overflowWrap: 'anywhere',
+                                  wordBreak: 'normal',
+                                }}
+                              >
+                                {meeting.description}
+                              </span>
                             </div>
                           </div>
                         )}
@@ -5556,8 +5862,8 @@ export default function CalendarPage() {
           {/* Username Field - Visitor mode only */}
           {roomHash && (
             <div className="flex flex-col gap-2">
-              <div className="flex flex-col md:flex-row gap-2 md:gap-4 md:items-end">
-                <div className="flex flex-col gap-1 flex-1 max-w-md">
+              <div ref={actionControlsRowRef} className="flex flex-col md:flex-row md:flex-nowrap gap-2 md:gap-4 md:items-end">
+                <div className="flex flex-col gap-1 flex-1 min-w-[12rem] max-w-[18rem] lg:max-w-[20rem]">
                   <label className="text-sm font-medium text-foreground flex items-center gap-2">
                     Your Name
                     <LearnerHelpIcon
@@ -5607,7 +5913,7 @@ export default function CalendarPage() {
                     className="px-3 py-2 border border-border rounded-md text-sm bg-background text-foreground focus:ring-2 focus:ring-primary focus:border-primary"
                   />
                 </div>
-                <div className="flex flex-wrap items-center gap-2 flex-1">
+                <div className="flex flex-wrap items-center gap-2 flex-1 min-w-0">
                   {/* Contextual guidance messages */}
                   {!username.trim() && currentSelection.size === 0 && (
                     <p className="text-sm text-muted-foreground italic">
@@ -5642,7 +5948,7 @@ export default function CalendarPage() {
                   )}
                   {/* AI Assistant, Create Meeting Time & Import button - right aligned */}
                   {isAuthenticated && (
-                    <div className="ml-auto flex items-center gap-2 shrink-0">
+                    <div className="ml-auto flex items-center gap-2 shrink-0 flex-nowrap">
                       {roomHash && isCreator && currentSelection.size > 0 && !isCreatingMeeting && (
                         <button
                           onClick={() => {
@@ -5670,15 +5976,16 @@ export default function CalendarPage() {
                               setLeftPanelOrder(prev => prev.includes('meetingForm') ? prev : [...prev, 'meetingForm'])
                             }
                           }}
-                          className="flex items-center gap-2 px-3 py-2 bg-green-600 text-white rounded-lg text-sm font-medium hover:bg-green-700 transition-all shrink-0"
+                          className={`flex items-center gap-2 ${useCompactButtonPadding ? 'px-2.5' : 'px-3'} py-2 bg-green-600 text-white rounded-lg text-sm font-medium hover:bg-green-700 transition-all shrink-0`}
+                          title="Create Meeting Time"
                         >
                           <CalendarPlus className="w-4 h-4" />
-                          <span className="hidden md:inline">Create Meeting Time</span>
+                          {createMeetingButtonText && <span>{createMeetingButtonText}</span>}
                         </button>
                       )}
                       <button
                         onClick={() => window.dispatchEvent(new CustomEvent('openAiPanel'))}
-                        className="px-3 py-2 rounded-lg text-sm font-medium flex items-center gap-2 transition-all hover:opacity-90 shrink-0"
+                        className={`rounded-lg text-sm font-medium flex items-center gap-2 transition-all hover:opacity-90 shrink-0 ${useCompactButtonPadding ? 'px-2.5 py-2' : 'px-3 py-2'}`}
                         style={{
                           background: 'linear-gradient(135deg, #8B5CF6, #6366F1, #3B82F6, #06B6D4)',
                           backgroundSize: '400% 400%',
@@ -5692,15 +5999,16 @@ export default function CalendarPage() {
                         ) : (
                           <Sparkles className="w-4 h-4" />
                         )}
-                        <span className="hidden md:inline">AI Assistant</span>
+                        {aiAssistantButtonText && <span>{aiAssistantButtonText}</span>}
                       </button>
                       {hasPastAvailability && (
                         <button
                           onClick={() => setShowImportModal(true)}
-                          className="px-3 md:px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700 font-medium text-sm flex items-center gap-1.5 shrink-0"
+                          className={`bg-indigo-600 text-white rounded-md hover:bg-indigo-700 font-medium text-sm flex items-center gap-1.5 shrink-0 ${importButtonText ? (useCompactButtonPadding ? 'px-2.5 py-2' : 'px-3 md:px-4 py-2') : 'w-9 h-9 px-0 justify-center'}`}
+                          title="Import"
                         >
                           <Calendar className="w-4 h-4" />
-                          Import
+                          {importButtonText && <span>{importButtonText}</span>}
                         </button>
                       )}
                     </div>
@@ -6226,6 +6534,7 @@ export default function CalendarPage() {
                   const isSkipped = isDaySkipped(day)
                   const cellId = getCellId(day, time)
                   const isCurrentSelection = currentSelection.has(cellId)
+                  const isImportPreviewCell = showImportModal && importPreviewSelection.has(cellId)
                   const isMeetingCreationCell = meetingCreationSelection.has(cellId)
                   const availableUsers = getCellAvailability(cellId)
                   const userCount = availableUsers.length
@@ -6250,6 +6559,8 @@ export default function CalendarPage() {
                           ? 'bg-gray-400/70 dark:bg-[hsla(222,47%,11%,0.7)] cursor-not-allowed'
                           : isCurrentSelection && roomHash && !isCreatingMeeting
                           ? `${purpleGradient} cursor-pointer`
+                          : isImportPreviewCell && roomHash && !isCreatingMeeting
+                          ? 'bg-cyan-300/70 dark:bg-cyan-600/50 cursor-pointer'
                           : selectedParticipantColor && roomHash
                           ? 'cursor-pointer'
                           : userCount > 0 && roomHash
@@ -6707,17 +7018,6 @@ export default function CalendarPage() {
         </div>
         <div className="h-32 md:h-48" />
       </footer>
-
-      {/* Import Availability Modal */}
-      <ImportAvailabilityModal
-        open={showImportModal}
-        onClose={() => setShowImportModal(false)}
-        onImport={handleImportAvailability}
-        currentCalendarHash={roomHash}
-        currentWeekStart={currentWeekStart}
-        customStartDate={customStartDate}
-        customEndDate={customEndDate}
-      />
 
       {/* Fading popup shown when user clicks a non-selectable cell */}
       {notSelectablePopup && (

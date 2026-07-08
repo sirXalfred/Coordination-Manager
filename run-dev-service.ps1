@@ -14,12 +14,28 @@ param(
     [string]$CodeDir,
 
     [Parameter(Mandatory = $true)]
-    [string]$ServiceCommand
+    [string]$ServiceCommand,
+
+    [string]$LogPath
 )
 
 $ErrorActionPreference = "Stop"
 $markerDir = Join-Path $PSScriptRoot ".cm-stop-markers"
 $markerPath = Join-Path $markerDir "$ServiceName.requested"
+if (-not $LogPath) {
+    $logDir = Join-Path $PSScriptRoot ".cm-dev-logs"
+    New-Item -ItemType Directory -Path $logDir -Force | Out-Null
+    $LogPath = Join-Path $logDir "$ServiceName.log"
+} else {
+    $logDir = Split-Path -Parent $LogPath
+    if ($logDir) {
+        New-Item -ItemType Directory -Path $logDir -Force | Out-Null
+    }
+}
+
+if (Test-Path $LogPath) {
+    Remove-Item $LogPath -Force -ErrorAction SilentlyContinue
+}
 
 [Console]::Title = $Title
 $Host.UI.RawUI.WindowTitle = $Title
@@ -35,7 +51,17 @@ function global:prompt {
 
 [Console]::Title = $Title
 $Host.UI.RawUI.WindowTitle = $Title
-Invoke-Expression $ServiceCommand
+$transcriptStarted = $false
+
+try {
+    Start-Transcript -Path $LogPath -Force | Out-Null
+    $transcriptStarted = $true
+    Invoke-Expression $ServiceCommand
+} finally {
+    if ($transcriptStarted) {
+        Stop-Transcript | Out-Null
+    }
+}
 
 if (Test-Path $markerPath) {
     Remove-Item $markerPath -Force -ErrorAction SilentlyContinue

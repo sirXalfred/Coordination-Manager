@@ -70,6 +70,7 @@ Run the consolidated schema in the Supabase SQL Editor:
 ```
 
 This creates all tables, indexes, RLS policies, and the traveler cleanup function in one step.
+For a fresh database, run only this file. The other `000_feature-*.sql` files are incremental feature migrations for existing databases and do not need to be run separately during initial setup.
 
 ### 4. Configure Google OAuth
 

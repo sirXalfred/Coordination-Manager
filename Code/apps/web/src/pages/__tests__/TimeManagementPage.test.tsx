@@ -276,6 +276,87 @@ describe('TimeManagementPage', () => {
     expect(mockDedupedGet.mock.calls.filter((call) => call[0] === '/api/user-events').length).toBeGreaterThanOrEqual(2)
   })
 
+  it('keeps neighboring week data cached when navigating back and forth', async () => {
+    mockDedupedGet.mockImplementation(async (url: string) => {
+      if (url === '/api/calendar-sources') {
+        return {
+          data: {
+            sources: [
+              {
+                id: 'google-1',
+                source_type: 'google_oauth',
+                google_email: 'user@example.com',
+                public_url: null,
+                display_name: 'Google Personal',
+                color: '#34d399',
+                is_active: true,
+              },
+            ],
+          },
+        }
+      }
+      if (url === '/api/time-management/modes') {
+        return {
+          data: {
+            activeModeId: 'mode-main',
+            modes: [
+              {
+                id: 'mode-main',
+                name: 'Main',
+                main_color: '#2563eb',
+                slot_minutes: 30,
+                sync_calendars: [],
+                time_backgrounds: [],
+                collapsed_background_ids: [],
+                quick_templates: [],
+                show_quick_templates_in_main: false,
+              },
+            ],
+          },
+        }
+      }
+      if (url === '/api/time-management/categories') {
+        return { data: { categories: [] } }
+      }
+      if (url === '/api/user-events') {
+        return { data: { events: [] } }
+      }
+      return { data: {} }
+    })
+
+    mockApiPost.mockResolvedValue({
+      data: { inserted: 0, updated: 0, deleted: 0, syncedSources: 1 },
+    })
+
+    render(
+      <MemoryRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
+        <TimeManagementPage />
+      </MemoryRouter>
+    )
+
+    await screen.findByRole('heading', { name: 'Time Management' })
+
+    await waitFor(() => {
+      expect(mockApiPost).toHaveBeenCalledTimes(3)
+    })
+
+    fireEvent.click(screen.getByTitle('Previous week'))
+
+    await waitFor(() => {
+      expect(mockApiPost.mock.calls.length).toBeGreaterThan(3)
+    })
+
+    fireEvent.click(screen.getByTitle('Next week'))
+
+    mockApiPost.mockClear()
+
+    fireEvent.click(screen.getByTitle('Previous week'))
+
+    await waitFor(() => {
+      expect(mockApiPost).not.toHaveBeenCalled()
+    })
+  })
+
   it('toggles hidden mode and updates the page title with a disable action', async () => {
     render(
       <MemoryRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
@@ -782,6 +863,32 @@ describe('TimeManagementPage', () => {
     expect(calledUrls).toContain('/api/time-management/prefs')
     expect(calledUrls).toContain('/api/user-events')
     expect(calledUrls).not.toContain('/api/calendar-sources')
+  })
+
+  it('keeps quick objects disabled by default for first-time anonymous visitors', async () => {
+    mockUseAuth.mockReturnValue({
+      isLoading: false,
+      isAuthenticated: false,
+      isTraveler: false,
+    })
+
+    render(
+      <MemoryRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
+        <TimeManagementPage />
+      </MemoryRouter>
+    )
+
+    expect(await screen.findByRole('heading', { name: 'Time Management' })).toBeInTheDocument()
+
+    await waitFor(() => {
+      const raw = localStorage.getItem('time-management-v1')
+      expect(raw).toBeTruthy()
+      const parsed = JSON.parse(raw as string) as { showQuickTemplatesInMain?: boolean }
+      expect(parsed.showQuickTemplatesInMain).toBe(false)
+    })
+
+    expect(screen.queryByText('No templates yet. Use Quick Objects in the left panel to create one.')).not.toBeInTheDocument()
+    expect(mockDedupedGet).not.toHaveBeenCalledWith('/api/time-management/modes')
   })
 
   it('defaults new connected calendars to enabled when no preference exists', async () => {
